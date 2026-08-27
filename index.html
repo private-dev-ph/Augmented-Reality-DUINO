@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Inspect PCB JSON, EAGLE, and ODB++ board files in the browser.">
+    <script>
+      (() => {
+        try {
+          if (localStorage.getItem('arduino_theme_mode') === 'dark') {
+            document.documentElement.dataset.mode = 'dark';
+          }
+        } catch {
+          // Theme initialization continues in the app if storage is unavailable.
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="/src/theme.css">
+    <link rel="stylesheet" href="/src/styles.css">
+    <title>Augmented Reality - DUINO</title>
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <img class="brand-logo" src="/assets/AR-DUINO%20logo.png" alt="AR-DUINO logo">
+        <h1>Augmented Reality - DUINO</h1>
+        <input id="fileInput" type="file" accept=".json,.brd,.sch,.zip,application/json,application/xml,application/zip" hidden disabled>
+      </header>
+
+      <main>
+        <section id="boardWrap" aria-label="Board canvas">
+          <canvas id="board"></canvas>
+          <div id="warning" role="status"></div>
+          <div class="help-control">
+            <button id="helpBtn" class="help-button" type="button" aria-label="Show board controls help" aria-describedby="hint">
+              <svg class="help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.6 9.2a2.4 2.4 0 1 1 4.3 1.5c-.8.8-1.9 1.1-1.9 2.4"></path><circle cx="12" cy="16.8" r=".8" fill="currentColor" stroke="none"></circle></svg>
+            </button>
+            <div id="hint" class="help-tooltip" role="tooltip">Wheel: zoom · pinch: zoom · drag: pan · click: inspect · F: fit</div>
+          </div>
+
+          <button id="boardMenuBtn" class="canvas-menu-toggle" type="button" aria-label="Open board controls" aria-controls="boardMenu" aria-expanded="false">
+            <svg class="menu-icon menu-icon-menu" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+            <svg class="menu-icon menu-icon-close" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 5 14 14M19 5 5 19"></path></svg>
+          </button>
+
+          <button id="searchBtn" class="canvas-menu-toggle search-toggle" type="button" aria-label="Search board" title="Search board" aria-controls="searchWindow" aria-expanded="false">
+            <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="5.8"></circle><path d="m15.2 15.2 4.6 4.6"></path></svg>
+          </button>
+
+          <button id="sequenceLoadBtn" class="canvas-menu-toggle sequence-load-toggle" type="button" aria-label="Open inspection workspace" title="Inspect board" aria-controls="sequenceWindow" hidden>
+            <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="13" height="18" rx="2"></rect><path d="M8 8h5M8 12h5M8 16h2m8-3v6m0 0-2.5-2.5M18 19l2.5-2.5"></path></svg>
+          </button>
+
+          <nav id="boardMenu" class="canvas-menu" aria-label="Board controls" hidden>
+            <div class="canvas-menu-item" hidden aria-hidden="true">
+              <button class="canvas-menu-icon" type="button" data-action="upload" aria-label="Upload file" disabled>
+                <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v4h14v-4"></path></svg>
+              </button>
+              <span class="canvas-menu-label">Upload</span>
+            </div>
+            <div class="canvas-menu-item">
+              <button class="canvas-menu-icon" type="button" data-panel="samples" data-title="Arduino samples" aria-label="Open Arduino samples">
+                <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="16" rx="2"></rect><path d="M8 8h8M8 12h8M8 16h4"></path></svg>
+              </button>
+              <span class="canvas-menu-label">Samples</span>
+            </div>
+            <div class="canvas-menu-item">
+              <button class="canvas-menu-icon" type="button" data-panel="view" data-title="View" aria-label="Open view controls">
+                <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.2-6 9-6 9 6 9 6-3.2 6-9 6-9-6-9-6Z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+              </button>
+              <span class="canvas-menu-label">View</span>
+            </div>
+            <div class="canvas-menu-item">
+              <button class="canvas-menu-icon" type="button" data-panel="layers" data-title="Layers &amp; presets" aria-label="Open layers and presets">
+                <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 8 4-8 4-8-4 8-4Zm-8 8 8 4 8-4M4 16l8 4 8-4"></path></svg>
+              </button>
+              <span class="canvas-menu-label">Layers &amp; presets</span>
+            </div>
+            <div class="canvas-menu-item">
+              <button class="canvas-menu-icon" type="button" data-action="inspection-sequence" aria-label="Open sequence editor">
+                <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"></rect><path d="M8 8h2m2 0h4M8 12h2m2 0h4M8 16h2m2 0h4"></path><path d="m8.2 8 .8.8 1.4-1.6m-2.2 5 .8.8 1.4-1.6m-2.2 5 .8.8 1.4-1.6"></path></svg>
+              </button>
+              <span class="canvas-menu-label">Sequence</span>
+            </div>
+            <div class="canvas-menu-item">
+              <button id="themeToggle" class="canvas-menu-icon theme-toggle" type="button" data-action="theme" aria-pressed="false" aria-label="Switch to dark theme" title="Switch to dark theme">
+                <svg class="menu-icon theme-icon-dark" viewBox="0 0 24 24" aria-hidden="true"><path d="M21.75 15A9.7 9.7 0 0 1 18 15.75c-5.38 0-9.75-4.37-9.75-9.75 0-1.33.27-2.6.75-3.75A9.75 9.75 0 1 0 21.75 15Z"></path></svg>
+                <svg class="menu-icon theme-icon-light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path></svg>
+              </button>
+              <span id="themeToggleLabel" class="canvas-menu-label theme-toggle-text">Dark theme</span>
+            </div>
+          </nav>
+
+          <div id="controlBackdrop" class="control-backdrop" hidden></div>
+          <div id="searchBackdrop" class="search-backdrop" hidden></div>
+          <section id="searchWindow" class="search-window" role="dialog" aria-modal="true" aria-labelledby="searchTitle" hidden>
+            <div class="search-header">
+              <div class="search-field-shell">
+                <svg class="search-field-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="5.8"></circle><path d="m15.2 15.2 4.6 4.6"></path></svg>
+                <label id="searchTitle" class="sr-only" for="searchInput">Search board</label>
+                <input id="searchInput" type="search" autocomplete="off" placeholder="Search components or nets...">
+              </div>
+              <button id="searchClose" class="panel-close search-close" type="button" aria-label="Close search">
+                <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 5 14 14M19 5 5 19"></path></svg>
+              </button>
+            </div>
+            <div id="searchResults" class="search-results" role="listbox" aria-label="Board search results"></div>
+          </section>
+
+          <div id="sequenceBackdrop" class="sequence-backdrop" hidden></div>
+          <section id="sequenceWindow" class="sequence-window" role="dialog" aria-modal="false" aria-labelledby="sequenceTitle" hidden>
+            <div class="sequence-window-shell">
+              <div class="sequence-window-header">
+                <div class="sequence-title-block">
+                  <strong id="sequenceTitle">Inspection sequence</strong>
+                  <input id="sequenceName" class="sequence-name" type="text" value="Inspection sequence" aria-label="Inspection sequence name">
+                </div>
+                <div class="sequence-actions">
+                  <button id="sequenceUploadBtn" type="button" title="Upload sequence"><svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v4h14v-4"></path></svg><span>Upload</span></button>
+                  <button id="sequenceSampleBtn" type="button" title="Load starter sequence"><svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="16" rx="2"></rect><path d="M8 8h8M8 12h8M8 16h4"></path></svg><span>Sample</span></button>
+                  <button id="sequenceSaveBtn" type="button" title="Save sequence to your computer"><svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11l3 3v13H5zM8 4v6h8V4M8 20v-5h8v5"></path></svg><span>Save</span></button>
+                  <button id="sequenceDoneBtn" type="button" title="Return to board"><svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"></path></svg><span>Done</span></button>
+                </div>
+              </div>
+
+              <div class="sequence-tabs" role="tablist" aria-label="Inspection workspace">
+                <button class="sequence-tab" type="button" role="tab" aria-selected="true" aria-controls="sequenceFindPanel" data-sequence-tab="find">Find</button>
+                <button class="sequence-tab" type="button" role="tab" aria-selected="false" aria-controls="sequenceListPanel" data-sequence-tab="sequence">Sequence <span id="sequenceTabCount">0</span></button>
+              </div>
+
+              <div class="sequence-workspace">
+                <section id="sequenceFindPanel" class="sequence-column sequence-tab-panel is-active" aria-labelledby="sequenceSearchHeading" data-sequence-panel="find">
+                  <div class="sequence-column-heading">
+                    <div><strong id="sequenceSearchHeading">Find board elements</strong><span>Click an element to add it.</span></div>
+                  </div>
+                  <div class="search-field-shell sequence-search-shell">
+                    <svg class="search-field-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="5.8"></circle><path d="m15.2 15.2 4.6 4.6"></path></svg>
+                    <label class="sr-only" for="sequenceSearchInput">Find elements for the inspection sequence</label>
+                    <input id="sequenceSearchInput" type="search" autocomplete="off" placeholder="Search components or nets...">
+                  </div>
+                  <div id="sequenceSearchResults" class="search-results sequence-search-results" role="listbox" aria-label="Elements available for the inspection sequence"></div>
+                </section>
+
+                <section id="sequenceListPanel" class="sequence-column sequence-list-column sequence-tab-panel" aria-labelledby="sequenceListHeading" data-sequence-panel="sequence" hidden>
+                  <div class="sequence-column-heading sequence-list-heading">
+                    <div><strong id="sequenceListHeading">Sequence</strong><span>Use the arrows to rearrange.</span></div>
+                    <span id="sequenceCount" class="badge">0 steps</span>
+                  </div>
+                  <ol id="sequenceItems" class="sequence-items"></ol>
+                  <div id="sequenceEmpty" class="sequence-empty">Add components or nets from the search results.</div>
+                </section>
+              </div>
+              <div class="sequence-window-footer">
+                <span id="sequenceEditorStatus" class="sequence-editor-status">The sequence is kept in this browser session until you save or upload it.</span>
+              </div>
+            </div>
+          </section>
+          <input id="sequenceFileInput" type="file" accept=".json,application/json" hidden>
+
+          <section id="sequencePreview" class="sequence-preview-card" aria-live="polite" hidden>
+            <span id="sequencePreviewType" class="sequence-step-type">Component preview</span>
+            <strong id="sequencePreviewName">—</strong>
+            <span id="sequencePreviewMeta">—</span>
+            <div class="sequence-preview-actions">
+              <button id="sequencePreviewBack" type="button">Back to sequence</button>
+              <button id="sequencePreviewAdd" type="button">Add step</button>
+            </div>
+          </section>
+
+          <section id="sequenceNav" class="sequence-nav" aria-label="Inspection sequence navigation" hidden>
+            <div class="sequence-step-summary">
+              <span id="sequenceStepType" class="sequence-step-type">Component</span>
+              <strong id="sequenceStepName">—</strong>
+              <span id="sequenceStepMeta">—</span>
+            </div>
+            <button id="sequencePrevious" class="sequence-nav-button" type="button" aria-label="Previous inspection step" title="Previous inspection step">
+              <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"></path></svg>
+            </button>
+            <span id="sequenceProgress" class="sequence-progress" aria-live="polite">0 / 0</span>
+            <button id="sequenceNext" class="sequence-nav-button" type="button" aria-label="Next inspection step" title="Next inspection step">
+              <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"></path></svg>
+            </button>
+            <button id="sequencePass" class="sequence-state-button sequence-pass" type="button" aria-label="Mark step passed">Pass</button>
+            <button id="sequenceFlag" class="sequence-state-button sequence-flag" type="button" aria-label="Flag inspection step">Flag</button>
+            <button id="sequenceFit" class="sequence-nav-button sequence-fit" type="button" aria-label="Fit board" title="Fit board">
+              <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"></path></svg>
+            </button>
+            <button id="sequenceExit" class="sequence-nav-button sequence-exit" type="button" aria-label="Close inspection sequence" title="Close inspection sequence">
+              <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"></path></svg>
+            </button>
+          </section>
+          <section id="controlWindow" class="control-window" role="dialog" aria-modal="true" aria-labelledby="controlWindowTitle" hidden>
+            <div class="control-window-header">
+              <strong id="controlWindowTitle">Controls</strong>
+              <button id="controlWindowClose" class="panel-close" type="button" aria-label="Close controls">
+                <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 5 14 14M19 5 5 19"></path></svg>
+              </button>
+            </div>
+
+            <div id="panelSamples" class="control-panel" hidden>
+              <p class="control-copy">Choose a reference board to load.</p>
+              <div class="sample-options">
+                <button type="button" data-sample="/UNO-TH_Rev3e-reference.zip">Arduino UNO</button>
+                <button type="button" data-sample="/MEGA2560_Rev3e-reference.zip">Arduino MEGA 2560</button>
+              </div>
+            </div>
+
+            <div id="panelView" class="control-panel" hidden>
+              <label class="check"><input id="grid" type="checkbox" checked> Grid</label>
+              <label class="check"><input id="showComponents" type="checkbox" checked> Components</label>
+              <label class="check"><input id="showFootprints" type="checkbox" checked> Footprint outlines</label>
+              <label class="check"><input id="showLabels" type="checkbox"> Reference labels</label>
+              <label class="check"><input id="showNetLabels" type="checkbox"> Net labels</label>
+              <label class="check"><input id="showInTraceNetNames" type="checkbox" checked> Net names in traces (3000%+)</label>
+              <label class="check"><input id="showPinoutNames" type="checkbox" checked> Selected pad numbers (when zoomed)</label>
+              <label class="check"><input id="showOutline" type="checkbox" checked> Board outline</label>
+              <label class="check"><input id="highlightConnectivity" type="checkbox" checked> Highlight connectivity</label>
+              <label class="check"><input id="showCopper" type="checkbox"> Copper artwork <span class="badge">(nets remain)</span></label>
+              <div class="badge">Layer switches affect artwork only; use Components to hide footprints and pads.</div>
+            </div>
+
+            <div id="panelLayers" class="control-panel" hidden>
+              <div class="section-title">Layer presets</div>
+              <div class="preset-row">
+                <button type="button" data-preset="all">All</button>
+                <button type="button" data-preset="fab">Fab</button>
+                <button type="button" data-preset="top">Top</button>
+                <button type="button" data-preset="bottom">Bottom</button>
+                <button type="button" data-preset="none">None</button>
+              </div>
+              <div class="section-title layers-title">Layers</div>
+              <div id="layers"><span class="badge">Load a board file to list layers.</span></div>
+            </div>
+
+          </section>
+
+          <aside id="selectionPanel" class="right">
+            <div class="section selection-section">
+              <div class="selection-heading">
+                <div class="section-title">Selection</div>
+                <button id="selectionClose" class="panel-close" type="button" aria-label="Minimize selection panel" title="Minimize selection panel">
+                  <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                </button>
+              </div>
+              <div id="info">Click a component to inspect it.</div>
+            </div>
+            <button id="selectionRestore" class="selection-restore" type="button" aria-label="Restore selection panel" title="Restore selection panel">
+              <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6"></path></svg>
+            </button>
+          </aside>
+        </section>
+      </main>
+
+      <footer>
+        <span id="status">Ready</span>
+        <span class="spacer"></span>
+        <span id="coords" class="mono">X —  Y —</span>
+        <span id="zoom" class="mono">100%</span>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

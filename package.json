@@ -1,0 +1,17 @@
+{
+  "name": "augmented-reality-duino-pcb-viewer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser-based PCB viewer for POGI JSON, EAGLE, and ODB++ board files.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "node --check src/main.js && node --check src/model/board.js && node --check src/model/inspection-sequence.js && node --check src/parsers/eagle.js && node --check src/parsers/file-loader.js && node --check src/parsers/odb.js && node --check src/parsers/zip.js && node --check src/render/board-renderer.js && node --check src/render/viewport.js && node --check src/state.js && node --check src/ui/theme.js && node --check src/ui/view.js",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "vite": "^7.1.3"
+  }
+}

@@ -1,0 +1,68 @@
+/*
+ * Clay & Coral theme adapted from LibreFlow Annotate's shared appearance
+ * tokens. The PCB canvas remains a neutral work surface so board geometry
+ * stays readable against the warm application chrome.
+ */
+:root {
+  color-scheme: light;
+  --bg: #f1eee7;
+  --bg2: #fbfaf7;
+  --bg3: #e7e3d9;
+  --surface: #fbfaf7;
+  --surface-2: #f5f2eb;
+  --accent: #e85a4f;
+  --accent-strong: #8e8d8a;
+  --accent2: #d8c3a5;
+  --accent-soft: #f5d4c9;
+  --danger: #c94d45;
+  --success: #5b8a7d;
+  --text: #343535;
+  --text-dim: #777671;
+  --border: #d8d2c7;
+  --canvas-bg: #dedbd4;
+  --overlay: rgba(52, 53, 53, .3);
+  --on-accent: #fffaf7;
+  --accent2-ink: #343535;
+  --shadow: 0 18px 50px rgba(52, 53, 53, .12);
+  --shadow-soft: 0 8px 26px rgba(52, 53, 53, .08);
+
+  /* Local aliases keep the viewer's layout vocabulary readable. */
+  --panel: var(--surface);
+  --panel-2: var(--surface-2);
+  --line: var(--border);
+  --muted: var(--text-dim);
+}
+
+:root[data-mode="dark"] {
+  color-scheme: dark;
+  --bg: #1b1a18;
+  --bg2: #242220;
+  --bg3: #34302b;
+  --surface: #2a2825;
+  --surface-2: #211f1d;
+  --accent: #e85a4f;
+  --accent-strong: #e98074;
+  --accent2: #d8c3a5;
+  --accent-soft: rgba(232, 90, 79, .2);
+  --danger: #f08070;
+  --success: #82b9a7;
+  --text: #fff7eb;
+  --text-dim: #bbb2a7;
+  --border: #4c453c;
+  --canvas-bg: #302d29;
+  --overlay: rgba(11, 10, 9, .7);
+  --on-accent: #fffaf5;
+  --accent2-ink: #2c251e;
+  --shadow: 0 18px 50px rgba(0, 0, 0, .35);
+  --shadow-soft: 0 8px 26px rgba(0, 0, 0, .25);
+}
+
+html {
+  background: var(--bg);
+  transition: background-color .25s ease;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
