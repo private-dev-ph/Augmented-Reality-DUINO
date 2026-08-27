@@ -30,12 +30,21 @@ const renderer = createBoardRenderer({
 let activeSequenceEntries = [];
 let activeSequenceTab = 'find';
 let previewSequenceEntry = null;
+let renderQueued = false;
 
 function render() {
-  renderer.render();
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => {
+    renderQueued = false;
+    renderer.render();
+  });
 }
 
-createThemeController(view.themeToggle, render, view.themeToggleLabel);
+createThemeController(view.themeToggle, () => {
+  renderer.invalidateThemeCache();
+  render();
+}, view.themeToggleLabel);
 
 function refreshConnectivity() {
   state.connectivity = resolveConnectivity(state.data, {
@@ -84,12 +93,17 @@ function selectAt(x, y) {
     refreshConnectivity();
     showNetSelection(view, state, netName);
     render();
-    return;
+    return true;
   }
   const component = renderer.nearestComponent(x, y);
   if (component) showSelection(view, state, component);
-  else clearSelection();
+  else {
+    clearSelection();
+    refreshConnectivity();
+    return false;
+  }
   refreshConnectivity();
+  return true;
 }
 
 async function openBoardFile(file) {
@@ -816,6 +830,10 @@ let pinchDistance = 0;
 let gestureStart = null;
 let gestureMoved = false;
 const TAP_MOVEMENT_THRESHOLD = 7;
+let emptyTapCount = 0;
+let lastEmptyTap = null;
+const TRIPLE_TAP_DELAY = 600;
+const TRIPLE_TAP_DISTANCE = 32;
 
 function pointerDistance(first, second) {
   return Math.hypot(second.x - first.x, second.y - first.y);
@@ -888,7 +906,25 @@ function finishPointer(event) {
   gestureStart = null;
   gestureMoved = false;
   if (!wasDragging || wasGestureMoved) return;
-  selectAt(event.offsetX, event.offsetY);
+  const selected = selectAt(event.offsetX, event.offsetY);
+  if (selected) {
+    emptyTapCount = 0;
+    lastEmptyTap = null;
+  } else {
+    const now = performance.now();
+    const closeToPrevious = lastEmptyTap
+      && now - lastEmptyTap.time <= TRIPLE_TAP_DELAY
+      && Math.hypot(event.offsetX - lastEmptyTap.x, event.offsetY - lastEmptyTap.y) <= TRIPLE_TAP_DISTANCE;
+    emptyTapCount = closeToPrevious ? emptyTapCount + 1 : 1;
+    lastEmptyTap = { x: event.offsetX, y: event.offsetY, time: now };
+    if (emptyTapCount >= 3) {
+      emptyTapCount = 0;
+      lastEmptyTap = null;
+      fitBoard();
+      setStatus(view, 'Fit board.');
+      return;
+    }
+  }
   render();
 }
 

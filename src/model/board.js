@@ -51,28 +51,86 @@ export function box(points) {
 }
 
 export function featurePoints(feature) {
+  if (Array.isArray(feature?._points)) return feature._points;
   return pointsOf(feature?.points || feature?.path || feature?.polyline);
 }
 
 export function allFeatures(board) {
+  if (Array.isArray(board?.renderFeatures)) return board.renderFeatures;
+  return buildRenderFeatures(board);
+}
+
+function buildRenderFeatures(board) {
   const features = [];
 
   for (const [layer, list] of Object.entries(board?.layerFeatures || {})) {
     for (const feature of Array.isArray(list) ? list : []) {
-      features.push({ ...feature, layer, source: 'layer' });
+      features.push({ ...feature, layer, source: 'layer', _points: featurePoints(feature) });
     }
   }
 
   for (const net of board?.nets || []) {
     for (const feature of net.traces || net.segments || []) {
-      features.push({ ...feature, layer: feature.layer || '', net: net.name || feature.net || '', source: 'net' });
+      features.push({ ...feature, layer: feature.layer || '', net: net.name || feature.net || '', source: 'net', _points: featurePoints(feature) });
     }
     for (const feature of net.contours || []) {
-      features.push({ ...feature, type: 'poly', layer: feature.layer || '', net: net.name || feature.net || '', source: 'net' });
+      features.push({ ...feature, type: 'poly', layer: feature.layer || '', net: net.name || feature.net || '', source: 'net', _points: featurePoints(feature) });
     }
   }
 
   return features;
+}
+
+function samePoint(firstPoint, secondPoint) {
+  return Math.hypot(firstPoint.x - secondPoint.x, firstPoint.y - secondPoint.y) < 0.001;
+}
+
+function joinTracePoints(features) {
+  const remaining = features.map((feature) => [...feature._points]);
+  const paths = [];
+  while (remaining.length) {
+    const path = remaining.shift();
+    let extended = true;
+    while (extended && remaining.length) {
+      extended = false;
+      const end = path[path.length - 1];
+      const start = path[0];
+      const endIndex = remaining.findIndex((points) => samePoint(points[0], end) || samePoint(points[points.length - 1], end));
+      if (endIndex >= 0) {
+        let next = remaining.splice(endIndex, 1)[0];
+        if (samePoint(next[next.length - 1], end)) next = next.reverse();
+        path.push(...next.slice(1));
+        extended = true;
+        continue;
+      }
+      const startIndex = remaining.findIndex((points) => samePoint(points[points.length - 1], start) || samePoint(points[0], start));
+      if (startIndex >= 0) {
+        let previous = remaining.splice(startIndex, 1)[0];
+        if (samePoint(previous[0], start)) previous = previous.reverse();
+        path.unshift(...previous.slice(0, -1));
+        extended = true;
+      }
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+
+function buildTraceGroups(features) {
+  const grouped = new Map();
+  for (const feature of features) {
+    const isTrace = feature.source === 'net'
+      && !['poly', 'polygon', 'contour'].includes(feature.type)
+      && feature._points.length >= 2;
+    if (!isTrace) continue;
+    const key = [feature.net || '', feature.layer || '', num(feature.width, 0.1), feature.polarity || 'P'].join('|');
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(feature);
+  }
+  return [...grouped.values()].map((featuresInGroup) => ({
+    sample: featuresInGroup[0],
+    paths: joinTracePoints(featuresInGroup),
+  }));
 }
 
 function validBounds(value) {
@@ -107,7 +165,7 @@ export function normalizeBoard(raw) {
       ? box(outline)
       : { minX: 0, minY: 0, maxX: 1, maxY: 1 };
 
-  return {
+  const board = {
     ...source,
     layers,
     layerMap,
@@ -117,6 +175,9 @@ export function normalizeBoard(raw) {
     nets: Array.isArray(source.nets) ? source.nets : [],
     bounds,
   };
+  board.renderFeatures = buildRenderFeatures(board);
+  board.traceGroups = buildTraceGroups(board.renderFeatures);
+  return board;
 }
 
 export function boardStats(board) {

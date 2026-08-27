@@ -1,17 +1,20 @@
 export function createViewport(canvas, state) {
   const context = canvas.getContext('2d');
   const viewport = {
+    width: 1,
+    height: 1,
     resize() {
       const rect = canvas.getBoundingClientRect();
-      state.viewport.dpr = Math.max(1, window.devicePixelRatio || 1);
-      canvas.width = Math.max(1, Math.round(rect.width * state.viewport.dpr));
-      canvas.height = Math.max(1, Math.round(rect.height * state.viewport.dpr));
+      viewport.width = Math.max(1, rect.width);
+      viewport.height = Math.max(1, rect.height);
+      state.viewport.dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+      canvas.width = Math.round(viewport.width * state.viewport.dpr);
+      canvas.height = Math.round(viewport.height * state.viewport.dpr);
       context.setTransform(state.viewport.dpr, 0, 0, state.viewport.dpr, 0, 0);
     },
 
     screenSize() {
-      const rect = canvas.getBoundingClientRect();
-      return { w: rect.width, h: rect.height };
+      return { w: viewport.width, h: viewport.height };
     },
 
     screen(point) {

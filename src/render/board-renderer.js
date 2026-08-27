@@ -2,9 +2,35 @@ import { allFeatures, featurePoints, first, layerOf, num, point, pointsOf, posit
 
 export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) {
   const context = canvas.getContext('2d');
+  const staticCache = document.createElement('canvas');
+  const staticCacheContext = staticCache.getContext('2d');
+  let staticCacheKey = '';
+  let staticCacheBoard = null;
+  let indexedBoard = null;
+  let spatialIndex = null;
+  let themeCacheKey = '';
+  let themeColors = {};
+
+  function refreshThemeColors() {
+    const mode = document.documentElement.dataset.mode || 'light';
+    if (themeCacheKey === mode) return;
+    const styles = getComputedStyle(document.documentElement);
+    themeColors = {
+      '--canvas-bg': styles.getPropertyValue('--canvas-bg').trim() || '#dedbd4',
+      '--accent': styles.getPropertyValue('--accent').trim() || '#e85a4f',
+      '--text': styles.getPropertyValue('--text').trim() || '#343535',
+      '--border': styles.getPropertyValue('--border').trim() || '#d8d2c7',
+    };
+    themeCacheKey = mode;
+  }
+
+  function invalidateThemeCache() {
+    themeCacheKey = '';
+    staticCacheKey = '';
+  }
 
   function themeColor(name, fallback) {
-    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+    return themeColors[name] || fallback;
   }
 
   function connectivityFocusActive() {
@@ -56,6 +82,83 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     return feature.source === 'net'
       && !['poly', 'polygon', 'contour'].includes(feature.type)
       && featurePoints(feature).length >= 2;
+  }
+
+  function intersects(firstBounds, secondBounds) {
+    return firstBounds.minX <= secondBounds.maxX && firstBounds.maxX >= secondBounds.minX
+      && firstBounds.minY <= secondBounds.maxY && firstBounds.maxY >= secondBounds.minY;
+  }
+
+  function boundsForPoints(points) {
+    if (!points.length) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+    let minX = points[0].x;
+    let minY = points[0].y;
+    let maxX = minX;
+    let maxY = minY;
+    for (const value of points.slice(1)) {
+      minX = Math.min(minX, value.x); minY = Math.min(minY, value.y);
+      maxX = Math.max(maxX, value.x); maxY = Math.max(maxY, value.y);
+    }
+    return { minX, minY, maxX, maxY };
+  }
+
+  function ensureSpatialIndex() {
+    if (indexedBoard === state.data) return;
+    indexedBoard = state.data;
+    const bounds = state.data.bounds;
+    const cellSize = Math.max(1, Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) / 24);
+    const grids = { features: new Map(), components: new Map(), drills: new Map() };
+    const add = (kind, item, itemBounds) => {
+      item._renderBounds = itemBounds;
+      const minColumn = Math.floor(itemBounds.minX / cellSize);
+      const maxColumn = Math.floor(itemBounds.maxX / cellSize);
+      const minRow = Math.floor(itemBounds.minY / cellSize);
+      const maxRow = Math.floor(itemBounds.maxY / cellSize);
+      for (let column = minColumn; column <= maxColumn; column += 1) for (let row = minRow; row <= maxRow; row += 1) {
+        const key = `${column}:${row}`;
+        if (!grids[kind].has(key)) grids[kind].set(key, []);
+        grids[kind].get(key).push(item);
+      }
+    };
+    for (const feature of allFeatures(state.data)) {
+      const points = featurePoints(feature);
+      const radius = feature.type === 'circle' ? num(feature.r, 0.1) : Math.max(0, num(feature.width, 0) / 2);
+      const featureBounds = feature.type === 'circle'
+        ? { minX: num(feature.x) - radius, minY: num(feature.y) - radius, maxX: num(feature.x) + radius, maxY: num(feature.y) + radius }
+        : boundsForPoints(points);
+      add('features', feature, featureBounds);
+    }
+    for (const component of state.data.components || []) {
+      const points = [positionOf(component)];
+      for (const pad of component.pads || []) points.push(transformLocal(pad, component));
+      for (const localPoints of componentPaths(component, 'outline')) points.push(...localPoints.map((value) => transformLocal(value, component)));
+      add('components', component, boundsForPoints(points));
+    }
+    for (const drill of state.data.drills || []) {
+      const radius = num(first(drill.diameter, drill.size), 0.8) / 2;
+      add('drills', drill, { minX: num(drill.x) - radius, minY: num(drill.y) - radius, maxX: num(drill.x) + radius, maxY: num(drill.y) + radius });
+    }
+    spatialIndex = { cellSize, grids };
+  }
+
+  function spatialQuery(kind, queryBounds) {
+    ensureSpatialIndex();
+    const { cellSize, grids } = spatialIndex;
+    const matches = new Set();
+    for (let column = Math.floor(queryBounds.minX / cellSize); column <= Math.floor(queryBounds.maxX / cellSize); column += 1) {
+      for (let row = Math.floor(queryBounds.minY / cellSize); row <= Math.floor(queryBounds.maxY / cellSize); row += 1) {
+        for (const item of grids[kind].get(`${column}:${row}`) || []) if (intersects(item._renderBounds, queryBounds)) matches.add(item);
+      }
+    }
+    return [...matches];
+  }
+
+  function visibleBounds() {
+    const { w, h } = viewport.screenSize();
+    const firstCorner = viewport.world(0, 0);
+    const secondCorner = viewport.world(w, h);
+    const padding = 2 / state.viewport.scale;
+    return { minX: Math.min(firstCorner.x, secondCorner.x) - padding, minY: Math.min(firstCorner.y, secondCorner.y) - padding, maxX: Math.max(firstCorner.x, secondCorner.x) + padding, maxY: Math.max(firstCorner.y, secondCorner.y) + padding };
   }
 
   function samePoint(firstPoint, secondPoint) {
@@ -148,9 +251,8 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     }
   }
 
-  function drawFeatures() {
+  function drawFeatures(features) {
     const focusActive = connectivityFocusActive();
-    const features = allFeatures(state.data);
     for (const feature of features) {
       if (!isFeatureVisible(feature)) continue;
       if (isNetTrace(feature)) continue;
@@ -192,16 +294,11 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
       context.restore();
     }
 
-    const traceGroups = new Map();
-    for (const feature of features) {
-      if (!isNetTrace(feature) || !isFeatureVisible(feature)) continue;
-      const key = [feature.net || '', feature.layer || '', num(feature.width, 0.1), feature.polarity || 'P'].join('|');
-      if (!traceGroups.has(key)) traceGroups.set(key, []);
-      traceGroups.get(key).push(feature);
-    }
-
-    for (const traceFeatures of traceGroups.values()) {
-      const sample = traceFeatures[0];
+    for (const traceGroup of state.data.traceGroups || []) {
+      const { sample } = traceGroup;
+      if (!isFeatureVisible(sample)) continue;
+      if (!traceGroup.bounds) traceGroup.bounds = boundsForPoints(traceGroup.paths.flat());
+      if (!intersects(traceGroup.bounds, visibleBounds())) continue;
       const netName = String(sample.net || '');
       const isSelectedNet = Boolean(netName && netName === state.selectedNet);
       const isConnectedNet = Boolean(focusActive && netName && state.connectivity.nets.has(netName));
@@ -218,7 +315,7 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
       context.lineCap = 'round';
       context.lineJoin = 'round';
       context.miterLimit = 2;
-      for (const tracePath of joinTraceSegments(traceFeatures)) {
+      for (const tracePath of traceGroup.paths) {
         path(tracePath);
         context.stroke();
       }
@@ -231,19 +328,15 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     // physically wide enough on screen to contain readable text.
     if (!state.view.showInTraceNetNames || state.viewport.scale < 30) return;
     const candidates = [];
-    const groups = new Map();
-    for (const feature of allFeatures(state.data)) {
-      if (!isNetTrace(feature) || !isFeatureVisible(feature) || !feature.net) continue;
-      const key = [feature.net, feature.layer || '', num(feature.width, 0.1)].join('|');
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(feature);
-    }
-    for (const traceFeatures of groups.values()) {
-      const sample = traceFeatures[0];
+    for (const traceGroup of state.data.traceGroups || []) {
+      const { sample } = traceGroup;
+      if (!isFeatureVisible(sample)) continue;
+      if (!traceGroup.bounds) traceGroup.bounds = boundsForPoints(traceGroup.paths.flat());
+      if (!intersects(traceGroup.bounds, visibleBounds())) continue;
       const netName = String(sample.net || '');
       const traceWidth = Math.max(0.5, num(sample.width, 0.1) * state.viewport.scale);
       if (!netName || traceWidth < 6) continue;
-      for (const tracePath of joinTraceSegments(traceFeatures)) {
+      for (const tracePath of traceGroup.paths) {
         for (let index = 1; index < tracePath.length; index += 1) {
           const start = viewport.screen(tracePath[index - 1]);
           const end = viewport.screen(tracePath[index]);
@@ -320,10 +413,10 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     context.restore();
   }
 
-  function netLabelAnchors() {
+  function netLabelAnchors(features) {
     const anchors = new Map();
     const candidates = new Map();
-    for (const feature of allFeatures(state.data)) {
+    for (const feature of features) {
       const netName = String(feature.net || '');
       if (!netName) continue;
       const visible = isFeatureVisible(feature);
@@ -362,12 +455,12 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     return anchors;
   }
 
-  function drawNetLabels() {
+  function drawNetLabels(features) {
     const selectedNet = String(state.selectedNet || '');
     if (!state.view.showNetLabels && !selectedNet) return;
     const textColor = themeColor('--text', '#343535');
     const selectedColor = themeColor('--accent', '#e85a4f');
-    for (const [netName, anchor] of netLabelAnchors()) {
+    for (const [netName, anchor] of netLabelAnchors(features)) {
       const selected = netName === selectedNet;
       if (!state.view.showNetLabels && !selected) continue;
       drawLabel(netName, anchor, selected ? selectedColor : textColor, selected);
@@ -376,6 +469,13 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
 
   function drawPads(component, opacity = 1) {
     const canvasColor = themeColor('--canvas-bg', '#dedbd4');
+    const holes = [];
+    context.save();
+    context.strokeStyle = '#f5c542';
+    context.fillStyle = '#f5c54255';
+    context.globalAlpha = opacity;
+    context.lineWidth = Math.max(1, 1 / state.viewport.scale);
+    context.beginPath();
     for (const pad of component.pads || []) {
       const position = transformLocal(pad, component);
       const width = num(first(pad.width, pad.size?.x), 0.6);
@@ -383,29 +483,32 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
       const screenPoint = viewport.screen(position);
       const radiusX = Math.max(1, width * state.viewport.scale / 2);
       const radiusY = Math.max(1, height * state.viewport.scale / 2);
-      context.save();
-      context.strokeStyle = '#f5c542';
-      context.fillStyle = '#f5c54255';
-      context.globalAlpha = opacity;
-      context.lineWidth = Math.max(1, 1 / state.viewport.scale);
       if (String(pad.shape || '').toLowerCase().includes('circle')) {
-        context.beginPath();
+        context.moveTo(screenPoint.x + radiusX, screenPoint.y);
         context.ellipse(screenPoint.x, screenPoint.y, radiusX, radiusY, 0, 0, Math.PI * 2);
-        context.fill();
-        context.stroke();
       } else {
-        context.fillRect(screenPoint.x - radiusX, screenPoint.y - radiusY, radiusX * 2, radiusY * 2);
-        context.strokeRect(screenPoint.x - radiusX, screenPoint.y - radiusY, radiusX * 2, radiusY * 2);
+        context.rect(screenPoint.x - radiusX, screenPoint.y - radiusY, radiusX * 2, radiusY * 2);
       }
       if (num(pad.drill) > 0) {
-        const holeRadius = Math.max(0.5, num(pad.drill) * state.viewport.scale / 2);
-        context.fillStyle = canvasColor;
-        context.beginPath();
-        context.arc(screenPoint.x, screenPoint.y, holeRadius, 0, Math.PI * 2);
-        context.fill();
+        holes.push({
+          x: screenPoint.x,
+          y: screenPoint.y,
+          radius: Math.max(0.5, num(pad.drill) * state.viewport.scale / 2),
+        });
       }
-      context.restore();
     }
+    context.fill();
+    context.stroke();
+    if (holes.length) {
+      context.fillStyle = canvasColor;
+      context.beginPath();
+      for (const hole of holes) {
+        context.moveTo(hole.x + hole.radius, hole.y);
+        context.arc(hole.x, hole.y, hole.radius, 0, Math.PI * 2);
+      }
+      context.fill();
+    }
+    context.restore();
   }
 
   function overlaps(firstRect, secondRect, padding = 3) {
@@ -591,10 +694,10 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     context.restore();
   }
 
-  function drawComponents() {
+  function drawComponents(components) {
     if (!state.view.showComponents) return;
     const focusActive = connectivityFocusActive();
-    for (const component of state.data.components) {
+    for (const component of components) {
       const layerName = layerOf(component);
       const position = positionOf(component);
       const selected = component === state.selected;
@@ -644,27 +747,49 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     }
   }
 
-  function drawDrills() {
+  function drawDrills(drills) {
     const canvasColor = themeColor('--canvas-bg', '#dedbd4');
     const textColor = themeColor('--text', '#343535');
-    for (const drill of state.data.drills || []) {
+    context.save();
+    context.strokeStyle = textColor;
+    context.fillStyle = canvasColor;
+    context.lineWidth = 1;
+    context.beginPath();
+    for (const drill of drills) {
       const screenPoint = viewport.screen(point(drill));
       const radius = Math.max(1, num(first(drill.diameter, drill.size), 0.8) * state.viewport.scale / 2);
-      context.save();
-      context.strokeStyle = textColor;
-      context.fillStyle = canvasColor;
-      context.lineWidth = 1;
-      context.beginPath();
+      context.moveTo(screenPoint.x + radius, screenPoint.y);
       context.arc(screenPoint.x, screenPoint.y, radius, 0, Math.PI * 2);
-      context.fill();
-      context.stroke();
-      context.restore();
     }
+    context.fill();
+    context.stroke();
+    context.restore();
   }
 
   function render() {
+    refreshThemeColors();
     const { w, h } = viewport.screenSize();
     const canvasColor = themeColor('--canvas-bg', '#dedbd4');
+    const cacheKey = JSON.stringify({
+      board: state.data?.name,
+      width: w,
+      height: h,
+      scale: state.viewport.scale,
+      offsetX: state.viewport.offsetX,
+      offsetY: state.viewport.offsetY,
+      center: state.viewport.center,
+      layers: [...state.layers],
+      view: state.view,
+      theme: document.documentElement.dataset.mode || 'light',
+    });
+    const canUseStaticCache = state.data && !state.selected && !state.selectedNet && staticCacheBoard === state.data && staticCacheKey === cacheKey
+      && staticCache.width === canvas.width && staticCache.height === canvas.height;
+    if (canUseStaticCache) {
+      context.clearRect(0, 0, w, h);
+      context.drawImage(staticCache, 0, 0, w, h);
+      onScaleChange?.(state.viewport.scale);
+      return;
+    }
     context.clearRect(0, 0, w, h);
     context.fillStyle = canvasColor;
     context.fillRect(0, 0, w, h);
@@ -672,23 +797,35 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
       onScaleChange?.(null);
       return;
     }
+    const currentBounds = visibleBounds();
+    const visibleFeatures = spatialQuery('features', currentBounds);
+    const visibleComponents = spatialQuery('components', currentBounds);
+    const visibleDrills = spatialQuery('drills', currentBounds);
     drawGrid();
     drawOutline();
-    drawFeatures();
-    drawDrills();
-    drawComponents();
-    drawNetLabels();
+    drawFeatures(visibleFeatures);
+    drawDrills(visibleDrills);
+    drawComponents(visibleComponents);
+    drawNetLabels(visibleFeatures);
     drawInTraceNetNames();
     drawSelectedPinoutNames();
+    if (!state.selected && !state.selectedNet) {
+      staticCache.width = canvas.width;
+      staticCache.height = canvas.height;
+      staticCacheContext.drawImage(canvas, 0, 0);
+      staticCacheBoard = state.data;
+      staticCacheKey = cacheKey;
+    }
     onScaleChange?.(state.viewport.scale);
   }
 
   function nearestComponent(x, y) {
     if (!state.data || !state.view.showComponents) return null;
     const target = viewport.world(x, y);
+    const hitRadius = Math.max(0.12, 8 / state.viewport.scale);
     let nearest = null;
     let distance = Infinity;
-    for (const component of state.data.components) {
+    for (const component of spatialQuery('components', { minX: target.x - hitRadius, minY: target.y - hitRadius, maxX: target.x + hitRadius, maxY: target.y + hitRadius })) {
       let current = Math.hypot(positionOf(component).x - target.x, positionOf(component).y - target.y);
       for (const pad of component.pads || []) {
         const position = transformLocal(pad, component);
@@ -706,7 +843,7 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
         nearest = component;
       }
     }
-    return distance <= Math.max(0.12, 8 / state.viewport.scale) ? nearest : null;
+    return distance <= hitRadius ? nearest : null;
   }
 
   function distanceToSegment(pointValue, start, end) {
@@ -749,9 +886,10 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
   function nearestNet(x, y) {
     if (!state.data) return null;
     const target = viewport.world(x, y);
+    const hitRadius = Math.max(0.8, 8 / state.viewport.scale);
     let nearest = null;
     let distance = Infinity;
-    for (const feature of allFeatures(state.data)) {
+    for (const feature of spatialQuery('features', { minX: target.x - hitRadius, minY: target.y - hitRadius, maxX: target.x + hitRadius, maxY: target.y + hitRadius })) {
       if (!isFeatureVisible(feature)) continue;
       if (feature.source !== 'net') continue;
       const netName = String(feature.net || '');
@@ -762,8 +900,8 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
         nearest = netName;
       }
     }
-    return distance <= Math.max(0.8, 8 / state.viewport.scale) ? nearest : null;
+    return distance <= hitRadius ? nearest : null;
   }
 
-  return { render, nearestComponent, nearestNet };
+  return { render, nearestComponent, nearestNet, invalidateThemeCache };
 }
