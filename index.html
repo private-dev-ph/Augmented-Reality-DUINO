@@ -29,6 +29,15 @@
 
       <main>
         <section id="boardWrap" aria-label="Board canvas">
+          <video id="arCameraVideo" class="ar-camera-video" autoplay muted playsinline aria-label="Live camera preview" hidden></video>
+          <canvas id="arOverlayCanvas" class="ar-overlay-canvas" aria-label="Calibrated PCB overlay" hidden></canvas>
+          <div id="arCalibrationOverlay" class="ar-calibration-overlay" aria-live="polite" hidden>
+            <div id="arCalibrationGuide" class="ar-calibration-guide"></div>
+            <button id="arCalibrationApplyBtn" class="ar-calibration-apply" type="button" aria-label="Apply calibration" title="Apply calibration">
+              <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.4 4.4L19.5 6.8"></path></svg>
+            </button>
+            <button id="arCalibrationCancelBtn" class="ar-calibration-cancel" type="button">Cancel</button>
+          </div>
           <canvas id="board"></canvas>
           <div id="warning" role="status"></div>
           <div class="help-control">
@@ -47,9 +56,45 @@
             <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="5.8"></circle><path d="m15.2 15.2 4.6 4.6"></path></svg>
           </button>
 
-          <button id="sequenceLoadBtn" class="canvas-menu-toggle sequence-load-toggle" type="button" aria-label="Open inspection workspace" title="Inspect board" aria-controls="sequenceWindow" hidden>
+          <button id="sequenceLoadBtn" class="canvas-menu-toggle sequence-load-toggle" type="button" aria-label="Open inspection workspace" title="Inspect board" aria-controls="sequenceWindow">
             <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="13" height="18" rx="2"></rect><path d="M8 8h5M8 12h5M8 16h2m8-3v6m0 0-2.5-2.5M18 19l2.5-2.5"></path></svg>
           </button>
+
+          <button id="arMenuBtn" class="canvas-menu-toggle camera-toggle" type="button" aria-label="Open AR controls" title="Open AR controls" aria-controls="arMenu" aria-expanded="false">
+            <svg class="menu-icon ar-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 19 4-14h2l4 14M5 13.2h6M14 19V5h3.1a4 4 0 0 1 0 8H14m4-0 3 6"></path></svg>
+            <svg class="menu-icon menu-icon-close" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 5 14 14M19 5 5 19"></path></svg>
+          </button>
+
+          <nav id="arMenu" class="canvas-menu ar-menu" aria-label="Augmented reality controls" hidden>
+            <div class="canvas-menu-item">
+              <button id="arCameraBtn" class="canvas-menu-icon" type="button" aria-label="Open camera" title="Open camera" aria-pressed="false">
+                <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2"></rect><path d="m16 10 5-3v10l-5-3M7 10h5"></path></svg>
+              </button>
+              <span id="arCameraLabel" class="canvas-menu-label">Open camera</span>
+            </div>
+            <div class="canvas-menu-item">
+              <button id="arTransparencyBtn" class="canvas-menu-icon" type="button" aria-label="Adjust camera and overlay transparency" title="Transparency" aria-controls="arTransparencyControl" aria-expanded="false">
+                <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18V3Z"></path><circle cx="12" cy="12" r="9"></circle></svg>
+              </button>
+              <span class="canvas-menu-label">Transparency</span>
+            </div>
+            <div id="arTransparencyControl" class="ar-transparency-control" hidden>
+              <label for="arTransparencyRange">Camera <span id="arTransparencyValue">50%</span> Overlay</label>
+              <input id="arTransparencyRange" type="range" min="0" max="100" value="50" aria-label="Camera to overlay balance">
+            </div>
+            <div class="canvas-menu-item">
+              <button id="arFourCornerBtn" class="canvas-menu-icon" type="button" aria-label="Calibrate with four corners" title="Calibrate with four corners" disabled>
+                <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"></path><path d="M8 8h8v8H8z"></path></svg>
+              </button>
+              <span class="canvas-menu-label">4-corner calibration</span>
+            </div>
+            <div class="canvas-menu-item">
+              <button id="arEdgeCalibrationBtn" class="canvas-menu-icon" type="button" aria-label="Edge calibration is coming later" title="Edge calibration is coming later" disabled>
+                <svg class="menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path><path d="m8 4-4 3 4 3m8-6 4 3-4 3"></path></svg>
+              </button>
+              <span class="canvas-menu-label">Edge calibration <small>Later</small></span>
+            </div>
+          </nav>
 
           <nav id="boardMenu" class="canvas-menu" aria-label="Board controls" hidden>
             <div class="canvas-menu-item" hidden aria-hidden="true">
@@ -256,8 +301,8 @@
       </main>
 
       <footer>
-        <span id="status">Ready</span>
-        <span class="spacer"></span>
+        <button id="status" class="status-control" type="button" aria-label="Show full status" aria-controls="statusPopup" aria-expanded="false">Ready</button>
+        <div id="statusPopup" class="status-popup" role="status" aria-live="polite" hidden>Ready</div>
         <span id="coords" class="mono">X —  Y —</span>
         <span id="zoom" class="mono">100%</span>
       </footer>

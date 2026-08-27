@@ -4,6 +4,23 @@ export function createView() {
   const byId = (id) => document.getElementById(id);
   return {
     canvas: byId('board'),
+    boardWrap: byId('boardWrap'),
+    arMenuButton: byId('arMenuBtn'),
+    arMenu: byId('arMenu'),
+    arCameraButton: byId('arCameraBtn'),
+    arCameraLabel: byId('arCameraLabel'),
+    arTransparencyButton: byId('arTransparencyBtn'),
+    arTransparencyControl: byId('arTransparencyControl'),
+    arTransparencyRange: byId('arTransparencyRange'),
+    arTransparencyValue: byId('arTransparencyValue'),
+    arFourCornerButton: byId('arFourCornerBtn'),
+    arEdgeCalibrationButton: byId('arEdgeCalibrationBtn'),
+    arCameraVideo: byId('arCameraVideo'),
+    arOverlayCanvas: byId('arOverlayCanvas'),
+    arCalibrationOverlay: byId('arCalibrationOverlay'),
+    arCalibrationGuide: byId('arCalibrationGuide'),
+    arCalibrationApplyButton: byId('arCalibrationApplyBtn'),
+    arCalibrationCancelButton: byId('arCalibrationCancelBtn'),
     boardMenuButton: byId('boardMenuBtn'),
     boardMenu: byId('boardMenu'),
     searchButton: byId('searchBtn'),
@@ -66,6 +83,7 @@ export function createView() {
     selectionRestore: byId('selectionRestore'),
     warning: byId('warning'),
     status: byId('status'),
+    statusPopup: byId('statusPopup'),
     coords: byId('coords'),
     zoom: byId('zoom'),
     viewControls: {
@@ -86,6 +104,18 @@ export function createView() {
 
 export function setStatus(view, message) {
   view.status.textContent = message;
+  view.statusPopup.textContent = message;
+  requestAnimationFrame(() => fitStatusText(view));
+}
+
+export function fitStatusText(view) {
+  const { status } = view;
+  status.style.fontSize = '';
+  let size = parseFloat(getComputedStyle(status).fontSize) || 13;
+  while (size > 9 && status.scrollWidth > status.clientWidth) {
+    size -= 0.5;
+    status.style.fontSize = `${size}px`;
+  }
 }
 
 export function setZoom(view, scale) {
