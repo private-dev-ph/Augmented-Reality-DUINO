@@ -380,6 +380,8 @@ main { position: relative; min-width: 0; min-height: 0; overflow: hidden; backgr
 .sequence-preview-card[hidden] { display: none; }
 .sequence-preview-card strong, .sequence-preview-card > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sequence-preview-card > span:not(.sequence-step-type) { color: var(--muted); font-size: 11px; }
+.sequence-preview-pin-field { display: grid; gap: 4px; margin-top: 5px; color: var(--text-dim); font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; }
+.sequence-preview-pin-field select { width: 100%; min-width: 0; min-height: 34px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); color: var(--text); font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; text-transform: none; }
 .sequence-preview-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 7px; }
 .sequence-preview-actions button { min-height: 38px; padding: 6px 8px; font-weight: 700; }
 .sequence-preview-actions button:last-child { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
@@ -539,6 +541,15 @@ aside.right.minimized .selection-restore { opacity: 1; pointer-events: auto; tra
 .pinout-list div { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 5px; align-items: center; min-width: 0; padding: 3px 4px; border-radius: 5px; background: color-mix(in srgb, var(--bg3) 68%, transparent); font-size: 10px; }
 .pinout-list span:first-child { color: var(--accent-strong); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-weight: 700; text-align: right; }
 .pinout-list span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+.net-components-details { margin-top: 10px; }
+.net-components-list { display: grid; gap: 5px; max-height: 178px; overflow: auto; padding: 4px 0 2px; }
+.net-component-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid color-mix(in srgb, var(--line) 80%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--bg3) 62%, transparent); color: var(--text); text-align: left; box-shadow: none; }
+.net-component-row:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg3)); }
+.net-component-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.net-component-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.net-component-row > span:not(.net-component-select-hint) { grid-column: 1 / -1; overflow: hidden; color: var(--text-dim); font-size: 10px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.net-component-select-hint { align-self: center; color: var(--accent-strong); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.net-components-empty { margin: 2px 0; color: var(--text-dim); font-size: 11px; }
 .property-category { margin-top: 7px; border-top: 1px solid var(--line); }
 .property-category summary { padding: 8px 0 5px; color: var(--text); cursor: pointer; font-size: 11px; font-weight: 700; }
 .property-kv { margin: 0 0 5px; padding: 4px 5px; border-radius: 7px; background: color-mix(in srgb, var(--bg3) 55%, transparent); font-size: 10px; }

@@ -100,6 +100,7 @@ test('normalizes and serializes inspection sequences', () => {
     name: 'Power inspection',
     items: [
       { type: 'component', refDes: 'R1', layer: 'F.Cu' },
+      { type: 'component', refDes: 'R1', layer: 'F.Cu', pad: '2', padNet: 'GND' },
       { type: 'net', name: 'GND', layer: 'B.Cu' },
       { type: 'unknown', name: 'ignored' },
     ],
@@ -108,6 +109,7 @@ test('normalizes and serializes inspection sequences', () => {
   assert.equal(sequence.name, 'Power inspection');
   assert.deepEqual(sequence.items, [
     { type: 'Component', name: 'R1', layer: 'F.Cu' },
+    { type: 'Component', name: 'R1', layer: 'F.Cu', pin: '2', pinNet: 'GND' },
     { type: 'Net', name: 'GND', layer: 'B.Cu' },
   ]);
   assert.equal(sequenceItemKey(sequence.items[0]), 'component:r1');

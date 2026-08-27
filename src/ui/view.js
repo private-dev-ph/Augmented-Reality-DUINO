@@ -34,6 +34,8 @@ export function createView() {
     sequencePreviewType: byId('sequencePreviewType'),
     sequencePreviewName: byId('sequencePreviewName'),
     sequencePreviewMeta: byId('sequencePreviewMeta'),
+    sequencePreviewPinField: byId('sequencePreviewPinField'),
+    sequencePreviewPin: byId('sequencePreviewPin'),
     sequencePreviewBack: byId('sequencePreviewBack'),
     sequencePreviewAdd: byId('sequencePreviewAdd'),
     sequenceNav: byId('sequenceNav'),
@@ -246,6 +248,53 @@ function appendPadProperties(container, pads) {
   container.append(category);
 }
 
+function appendConnectedComponentList(container, components, netName, onSelectComponent) {
+  const details = document.createElement('details');
+  details.className = 'pinout-details net-components-details';
+  details.open = true;
+  prepareDetailsAnimation(details);
+  const summary = document.createElement('summary');
+  summary.textContent = `Connected components (${components.length})`;
+  const list = document.createElement('div');
+  list.className = 'net-components-list';
+
+  if (!components.length) {
+    const empty = document.createElement('p');
+    empty.className = 'net-components-empty';
+    empty.textContent = 'No component pads are associated with this net.';
+    list.append(empty);
+  }
+
+  for (const component of components) {
+    const reference = refOf(component) || '(unnamed component)';
+    const pads = (component.pads || [])
+      .filter((pad) => String(pad.net || '') === String(netName || ''))
+      .map((pad) => String(first(pad.name, pad.number, pad.pin, pad.label, '')).trim())
+      .filter(Boolean)
+      .sort((firstPad, secondPad) => firstPad.localeCompare(secondPad, undefined, { numeric: true }));
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'net-component-row';
+    row.setAttribute('aria-label', `Select ${reference}, connected through ${netName}`);
+    const ref = document.createElement('strong');
+    ref.textContent = reference;
+    const meta = document.createElement('span');
+    const packageName = String(first(component.package, component.packageRef, component.part, '')).trim();
+    const pins = pads.length ? `Pins ${pads.join(', ')}` : 'Connected pad details unavailable';
+    meta.textContent = packageName ? `${pins} - ${packageName}` : pins;
+    const selectHint = document.createElement('span');
+    selectHint.className = 'net-component-select-hint';
+    selectHint.textContent = 'Inspect';
+    row.append(ref, meta, selectHint);
+    row.addEventListener('click', () => onSelectComponent?.(component));
+    list.append(row);
+  }
+
+  const content = createDetailsContent([list]);
+  details.append(summary, content.content);
+  container.append(details);
+}
+
 export function showSelection(view, state, component) {
   state.selected = component;
   state.selectedNet = null;
@@ -338,7 +387,7 @@ export function showSelection(view, state, component) {
   ]));
 }
 
-export function showNetSelection(view, state, netName) {
+export function showNetSelection(view, state, netName, onSelectComponent) {
   state.selected = null;
   state.selectedNet = netName;
   resetSelectionPanelPosition(view);
@@ -355,6 +404,9 @@ export function showNetSelection(view, state, netName) {
   ];
   view.info.append(title);
   appendPropertyCategory(view.info, 'Basic properties', rows, true);
+  const components = [...state.connectivity.components]
+    .sort((firstComponent, secondComponent) => refOf(firstComponent).localeCompare(refOf(secondComponent), undefined, { numeric: true }));
+  appendConnectedComponentList(view.info, components, netName, onSelectComponent);
   const net = (state.data?.nets || []).find((candidate) => String(candidate.name || '') === String(netName || '')) || { name: netName };
   const padConnections = state.data?.netPads?.[netName] || net.pads || net.connections || [];
   appendPropertyCategory(view.info, 'Connectivity', [

@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "name": "mega2560-rev3e-sequence",
+  "boardName": "MEGA2560_Rev3e",
+  "items": [
+    {
+      "type": "Component",
+      "name": "D1",
+      "layer": "F.Cu",
+      "pin": "A",
+      "pinNet": "PWRIN"
+    },
+    {
+      "type": "Component",
+      "name": "D1",
+      "layer": "F.Cu",
+      "pin": "C",
+      "pinNet": "VIN"
+    },
+    {
+      "type": "Component",
+      "name": "IC1",
+      "layer": "F.Cu",
+      "pin": "2",
+      "pinNet": "+5V"
+    },
+    {
+      "type": "Component",
+      "name": "IC6",
+      "layer": "F.Cu",
+      "pin": "5",
+      "pinNet": "+3V3"
+    },
+    {
+      "type": "Component",
+      "name": "F1",
+      "layer": "F.Cu",
+      "pin": "2",
+      "pinNet": "XVCC"
+    },
+    {
+      "type": "Component",
+      "name": "F1",
+      "layer": "F.Cu",
+      "pin": "1",
+      "pinNet": "USBVCC"
+    },
+    {
+      "type": "Component",
+      "name": "T1",
+      "layer": "F.Cu",
+      "pin": "3",
+      "pinNet": "GATE_CMD"
+    },
+    {
+      "type": "Component",
+      "name": "C12",
+      "layer": "F.Cu",
+      "pin": "2",
+      "pinNet": "CMP"
+    },
+    {
+      "type": "Component",
+      "name": "C13",
+      "layer": "F.Cu",
+      "pin": "2",
+      "pinNet": "+3V3"
+    }
+  ]
+}

@@ -20,6 +20,12 @@ function normalizeItem(item) {
     name,
     layer: String(item.layer || '').trim(),
   };
+  const pin = String(item.pin || item.pad || item.pinout || '').trim();
+  if (pin) normalized.pin = pin;
+  const pinNet = String(item.pinNet || item.padNet || '').trim();
+  if (pinNet) normalized.pinNet = pinNet;
+  const id = String(item.id || '').trim();
+  if (id) normalized.id = id;
   const status = String(item.status || '').toLowerCase();
   if (['passed', 'flagged', 'skipped'].includes(status)) normalized.status = status;
   return normalized;

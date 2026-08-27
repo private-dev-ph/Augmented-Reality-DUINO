@@ -20,6 +20,8 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
       '--accent': styles.getPropertyValue('--accent').trim() || '#e85a4f',
       '--text': styles.getPropertyValue('--text').trim() || '#343535',
       '--border': styles.getPropertyValue('--border').trim() || '#d8d2c7',
+      '--sequence-pin': styles.getPropertyValue('--sequence-pin').trim() || '#5b2aa8',
+      '--sequence-pin-fill': styles.getPropertyValue('--sequence-pin-fill').trim() || 'rgba(91, 42, 168, .32)',
     };
     themeCacheKey = mode;
   }
@@ -511,6 +513,35 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     context.restore();
   }
 
+  function drawSequencePinHighlight(component, pinName) {
+    if (!pinName) return;
+    const pad = (component.pads || []).find((candidate) => String(first(candidate.name, candidate.number, candidate.pin, candidate.label) || '').trim() === String(pinName));
+    if (!pad) return;
+    const position = viewport.screen(transformLocal(pad, component));
+    const width = num(first(pad.width, pad.size?.x), 0.6);
+    const height = num(first(pad.height, pad.size?.y), width);
+    const radiusX = Math.max(4, width * state.viewport.scale / 2 + 3);
+    const radiusY = Math.max(4, height * state.viewport.scale / 2 + 3);
+    const circular = String(pad.shape || '').toLowerCase().includes('circle');
+    context.save();
+    context.fillStyle = themeColor('--sequence-pin-fill', 'rgba(91, 42, 168, .32)');
+    context.lineWidth = 1;
+    context.beginPath();
+    if (circular) context.ellipse(position.x, position.y, radiusX, radiusY, 0, 0, Math.PI * 2);
+    else context.rect(position.x - radiusX, position.y - radiusY, radiusX * 2, radiusY * 2);
+    context.fill();
+    // A canvas-colour halo keeps the marker distinct from both F.Cu red and
+    // B.Cu blue artwork before the high-contrast theme colour is applied.
+    context.strokeStyle = themeColor('--canvas-bg', '#dedbd4');
+    context.lineWidth = 5;
+    context.stroke();
+    context.strokeStyle = themeColor('--sequence-pin', '#5b2aa8');
+    context.lineWidth = 2.5;
+    context.setLineDash([5, 3]);
+    context.stroke();
+    context.restore();
+  }
+
   function overlaps(firstRect, secondRect, padding = 3) {
     return firstRect.x - padding < secondRect.x + secondRect.width
       && firstRect.x + firstRect.width + padding > secondRect.x
@@ -575,6 +606,7 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
   function drawInPadPinoutNames(component) {
     const color = themeColor('--accent', '#e85a4f');
     const canvasColor = themeColor('--canvas-bg', '#dedbd4');
+    const sequencePin = state.sequence.active && component === state.selected ? state.sequence.activePin : '';
     context.save();
     context.textAlign = 'center';
     context.textBaseline = 'middle';
@@ -594,7 +626,7 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
       context.lineWidth = Math.max(2, fontSize / 4);
       context.strokeStyle = canvasColor;
       context.strokeText(pinName, position.x, position.y);
-      context.fillStyle = color;
+      context.fillStyle = pinName === sequencePin ? themeColor('--sequence-pin', '#5b2aa8') : color;
       context.fillText(pinName, position.x, position.y);
     }
     context.restore();
@@ -721,6 +753,9 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
           }
         }
         drawPads(component, opacity);
+      }
+      if (selected && state.sequence.active && state.sequence.activePin) {
+        drawSequencePinHighlight(component, state.sequence.activePin);
       }
 
       context.save();

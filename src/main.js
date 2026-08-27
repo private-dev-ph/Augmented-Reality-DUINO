@@ -30,7 +30,13 @@ const renderer = createBoardRenderer({
 let activeSequenceEntries = [];
 let activeSequenceTab = 'find';
 let previewSequenceEntry = null;
+let previewSequenceEditIndex = null;
 let renderQueued = false;
+
+const SAMPLE_SEQUENCE_FILES = [
+  { matches: /uno[^a-z0-9]*th[^a-z0-9]*rev3e/i, file: 'UNO-TH_Rev3e-sequence.json' },
+  { matches: /mega2560[^a-z0-9]*rev3e/i, file: 'MEGA2560-Rev3e-sequence.json' },
+];
 
 function render() {
   if (renderQueued) return;
@@ -51,6 +57,22 @@ function refreshConnectivity() {
     component: state.selected,
     net: state.selectedNet,
   });
+}
+
+function selectConnectedComponent(component) {
+  const netName = state.selectedNet;
+  showSelection(view, state, component);
+  refreshConnectivity();
+  setStatus(view, `${refOf(component) || 'Component'} selected from net ${netName || 'connection'}.`);
+  render();
+}
+
+function selectNet(netName) {
+  state.selected = null;
+  state.selectedNet = netName;
+  refreshConnectivity();
+  showNetSelection(view, state, netName, selectConnectedComponent);
+  render();
 }
 
 function fitBoard() {
@@ -88,11 +110,7 @@ function selectAt(x, y) {
   // nearby component origin, especially at high zoom.
   const netName = renderer.nearestNet(x, y);
   if (netName) {
-    state.selected = null;
-    state.selectedNet = netName;
-    refreshConnectivity();
-    showNetSelection(view, state, netName);
-    render();
+    selectNet(netName);
     return true;
   }
   const component = renderer.nearestComponent(x, y);
@@ -322,28 +340,52 @@ function focusBoardEntry(entry) {
     showSelection(view, state, entry.value);
     refreshConnectivity();
   } else {
-    state.selected = null;
-    state.selectedNet = entry.value;
-    refreshConnectivity();
-    showNetSelection(view, state, entry.value);
+    selectNet(entry.value);
+    return;
   }
   render();
 }
 
 function sequenceDescriptor(entry) {
-  return {
+  const descriptor = {
     type: entry.type,
     name: entry.name,
     layer: entry.layer || '',
     status: entry.status || 'pending',
   };
+  if (entry.pin) descriptor.pin = entry.pin;
+  if (entry.pinNet) descriptor.pinNet = entry.pinNet;
+  return descriptor;
+}
+
+function sequencePinLabel(item) {
+  if (!item?.pin) return '';
+  return `Pin ${item.pin}${item.pinNet ? ` (${item.pinNet})` : ''}`;
 }
 
 function sequenceEntriesForBoard() {
   const entries = searchEntries();
   return state.sequence.items
-    .map((item) => entries.find((entry) => sequenceItemKey(entry) === sequenceItemKey(item)))
+    .map((item, sequenceIndex) => {
+      const entry = entries.find((candidate) => sequenceItemKey(candidate) === sequenceItemKey(item));
+      return entry ? {
+        ...entry,
+        pin: item.pin || '',
+        pinNet: item.pinNet || '',
+        sequenceItem: item,
+        sequenceIndex,
+      } : null;
+    })
     .filter(Boolean);
+}
+
+function editSequenceStepPin(index) {
+  const entry = sequenceEntriesForBoard().find((candidate) => candidate.sequenceIndex === index);
+  if (!entry) {
+    view.sequenceEditorStatus.textContent = 'That component is unavailable on the current board.';
+    return;
+  }
+  openSequencePreview(entry, index);
 }
 
 function createSequenceIconButton(label, pathData, className = '') {
@@ -384,11 +426,18 @@ function renderSequenceItems() {
     name.textContent = sequenceItem.name;
     const meta = document.createElement('span');
     meta.className = 'sequence-item-meta';
+    const pinLabel = sequencePinLabel(sequenceItem);
     meta.textContent = `${sequenceItem.type} · Layer: ${sequenceItem.layer || '—'}`;
+    if (pinLabel) meta.textContent = `${sequenceItem.type} · Layer: ${sequenceItem.layer || '—'} · ${pinLabel}`;
     content.append(name, meta);
 
     const actions = document.createElement('div');
     actions.className = 'sequence-item-actions';
+    if (sequenceItem.type === 'Component') {
+      const editPin = createSequenceIconButton('Edit probe pin', 'M4 16.5V20h3.5L18.4 9.1l-3.5-3.5L4 16.5Zm13.8-9.2 1.1-1.1a1.5 1.5 0 0 0 0-2.1l-.8-.8a1.5 1.5 0 0 0-2.1 0l-1.1 1.1 3.5 3.5Z');
+      editPin.addEventListener('click', () => editSequenceStepPin(index));
+      actions.append(editPin);
+    }
     const moveUp = createSequenceIconButton('Move step up', 'm6 15 6-6 6 6');
     moveUp.disabled = index === 0;
     moveUp.addEventListener('click', () => moveSequenceItem(index, -1));
@@ -406,7 +455,6 @@ function renderSequenceItems() {
 function renderSequenceSearchResults(query = '') {
   const entries = searchEntries();
   const term = query.trim().toLowerCase();
-  const added = new Set(state.sequence.items.map(sequenceItemKey));
   const matches = entries
     .filter((entry) => !term || entry.searchText.toLowerCase().includes(term))
     .sort((first, second) => {
@@ -432,7 +480,7 @@ function renderSequenceSearchResults(query = '') {
     const item = document.createElement('div');
     item.className = 'search-result sequence-search-result';
     item.setAttribute('role', 'option');
-    const isAdded = added.has(sequenceItemKey(entry));
+    const isAdded = false;
     const details = document.createElement('div');
     details.className = 'sequence-result-details';
     item.disabled = isAdded;
@@ -454,8 +502,12 @@ function renderSequenceSearchResults(query = '') {
     add.type = 'button';
     add.className = 'sequence-add-button';
     add.textContent = isAdded ? 'Added' : 'Add';
+    if (entry.type === 'Component') add.textContent = 'Choose pin';
     add.disabled = isAdded;
-    if (!isAdded) add.addEventListener('click', () => addSequenceEntry(entry));
+    if (!isAdded) add.addEventListener('click', () => {
+      if (entry.type === 'Component') openSequencePreview(entry);
+      else addSequenceEntry(entry);
+    });
     item.append(details, preview, add);
     view.sequenceSearchResults.append(item);
   }
@@ -472,7 +524,6 @@ function updateSequenceName() {
 }
 
 function addSequenceEntry(entry) {
-  if (state.sequence.items.some((item) => sequenceItemKey(item) === sequenceItemKey(entry))) return;
   state.sequence.items.push(sequenceDescriptor(entry));
   state.sequence.boardName = state.data?.name || state.sequence.boardName || '';
   renderSequenceEditor();
@@ -494,8 +545,9 @@ function setSequenceTab(tab) {
   }
 }
 
-function openSequencePreview(entry) {
+function openSequencePreview(entry, editIndex = null) {
   previewSequenceEntry = entry;
+  previewSequenceEditIndex = editIndex;
   focusBoardEntry(entry);
   view.sequenceWindow.hidden = true;
   view.sequencePreviewType.textContent = `${entry.type} preview`;
@@ -503,15 +555,38 @@ function openSequencePreview(entry) {
   view.sequencePreviewMeta.textContent = entry.type === 'Net'
     ? `Layer: ${entry.layer || '—'}`
     : `Layer: ${entry.layer || '—'}${entry.detail ? ` · ${entry.detail}` : ''}`;
-  const added = state.sequence.items.some((item) => sequenceItemKey(item) === sequenceItemKey(entry));
-  view.sequencePreviewAdd.disabled = added;
-  view.sequencePreviewAdd.textContent = added ? 'Already added' : 'Add step';
+  view.sequencePreviewPinField.hidden = entry.type !== 'Component';
+  view.sequencePreviewPin.replaceChildren();
+  if (entry.type === 'Component') {
+    const wholeComponent = document.createElement('option');
+    wholeComponent.value = '';
+    wholeComponent.textContent = 'Whole component (no pin target)';
+    view.sequencePreviewPin.append(wholeComponent);
+    const pads = [...(entry.value?.pads || [])]
+      .map((pad) => ({
+        name: String(pad.name || pad.number || pad.pin || pad.label || '').trim(),
+        net: String(pad.net || '').trim(),
+      }))
+      .filter((pad) => pad.name)
+      .sort((firstPad, secondPad) => firstPad.name.localeCompare(secondPad.name, undefined, { numeric: true }));
+    for (const pad of pads) {
+      const option = document.createElement('option');
+      option.value = pad.name;
+      option.dataset.net = pad.net;
+      option.textContent = pad.net ? `${pad.name} - ${pad.net}` : pad.name;
+      view.sequencePreviewPin.append(option);
+    }
+    view.sequencePreviewPin.value = entry.pin || '';
+  }
+  view.sequencePreviewAdd.disabled = false;
+  view.sequencePreviewAdd.textContent = editIndex == null ? 'Add step' : 'Update step';
   view.sequencePreview.hidden = false;
 }
 
 function closeSequencePreview(returnToEditor = true) {
   view.sequencePreview.hidden = true;
   previewSequenceEntry = null;
+  previewSequenceEditIndex = null;
   if (returnToEditor) openSequenceEditor();
 }
 
@@ -543,6 +618,7 @@ function openSequenceEditor() {
   activeSequenceEntries = [];
   state.sequence.active = false;
   state.sequence.index = -1;
+  state.sequence.activePin = '';
   view.sequencePreview.hidden = true;
   view.sequenceWindow.hidden = false;
   // Sequence editing is a canvas mode, not a blocking modal: keep the board visible.
@@ -563,6 +639,7 @@ function installSequence(sequence, message) {
     boardName: sequence.boardName || state.data?.name || '',
     active: false,
     index: -1,
+    activePin: '',
   };
   activeSequenceEntries = [];
   view.sequenceName.value = state.sequence.name;
@@ -571,35 +648,35 @@ function installSequence(sequence, message) {
   setStatus(view, message);
 }
 
-function loadSampleSequence() {
+function sampleSequenceUrl(boardName) {
+  const sample = SAMPLE_SEQUENCE_FILES.find(({ matches }) => matches.test(String(boardName || '')));
+  if (!sample) return '';
+  const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
+  return `${baseUrl}${sample.file}`;
+}
+
+async function loadSampleSequence() {
   if (!state.data) {
-    view.sequenceEditorStatus.textContent = 'Load a sample board before loading a starter sequence.';
+    view.sequenceEditorStatus.textContent = 'Load a board before loading its sequence.';
     return;
   }
-
-  const entries = searchEntries();
-  const components = entries.filter((entry) => entry.type === 'Component');
-  const nets = entries.filter((entry) => entry.type === 'Net');
-  const chosen = [];
-  const add = (entry) => {
-    if (entry && !chosen.some((value) => sequenceItemKey(value) === sequenceItemKey(entry))) chosen.push(entry);
-  };
-  for (const entry of components.filter((value) => /^(U|IC|MCU|J)/i.test(value.name)).slice(0, 2)) add(entry);
-  for (const entry of components.filter((value) => /^(R|C|D|Q)/i.test(value.name)).slice(0, 2)) add(entry);
-  for (const entry of nets.filter((value) => /gnd|vcc|vin|\+5|3v3|reset/i.test(value.name)).slice(0, 2)) add(entry);
-  for (const entry of [...components, ...nets]) {
-    if (chosen.length >= 6) break;
-    add(entry);
+  const url = sampleSequenceUrl(state.data.name);
+  if (!url) {
+    view.sequenceEditorStatus.textContent = 'No bundled sequence is available for this board. You can create one or upload a JSON file.';
+    return;
   }
-
-  const boardName = state.data.name || 'Arduino board';
-  const sequence = {
-    version: 1,
-    name: `${boardName} starter inspection`,
-    boardName,
-    items: chosen.map(sequenceDescriptor),
-  };
-  installSequence(sequence, `Loaded starter inspection sequence with ${sequence.items.length} step${sequence.items.length === 1 ? '' : 's'}.`);
+  try {
+    view.sequenceEditorStatus.textContent = 'Loading the board sequence...';
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Could not load the bundled sequence (${response.status}).`);
+    const sequence = normalizeInspectionSequence(await response.json());
+    if (!sequence.items.length) throw new Error('The bundled sequence contains no valid steps.');
+    installSequence(sequence, `Loaded ${sequence.name} with ${sequence.items.length} step${sequence.items.length === 1 ? '' : 's'}.`);
+    startSequenceViewer();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    view.sequenceEditorStatus.textContent = `Sequence load failed: ${message}`;
+  }
 }
 
 function saveSequenceToFile() {
@@ -648,10 +725,12 @@ function renderSequenceControls() {
   view.sequencePrevious.disabled = !state.sequence.active || state.sequence.index <= 0;
   view.sequenceNext.disabled = !state.sequence.active || state.sequence.index >= count - 1;
   const entry = state.sequence.active ? activeSequenceEntries[state.sequence.index] : null;
-  const item = entry && state.sequence.items.find((candidate) => sequenceItemKey(candidate) === sequenceItemKey(entry));
+  const item = entry?.sequenceItem;
   view.sequenceStepType.textContent = entry?.type || 'Inspection';
   view.sequenceStepName.textContent = entry?.name || '—';
   view.sequenceStepMeta.textContent = entry ? `Layer: ${entry.layer || '—'} · ${item?.status || 'pending'}` : '—';
+  const pinLabel = sequencePinLabel(item);
+  if (entry && pinLabel) view.sequenceStepMeta.textContent = `Layer: ${entry.layer || '—'} · ${pinLabel} · ${item?.status || 'pending'}`;
   view.sequencePass.classList.toggle('is-active', item?.status === 'passed');
   view.sequenceFlag.classList.toggle('is-active', item?.status === 'flagged');
 }
@@ -661,11 +740,13 @@ function applySequenceEntry(index) {
   if (!entry) return;
   state.sequence.index = index;
   if (entry.type === 'Component') {
+    state.sequence.activePin = entry.pin || '';
     showSelection(view, state, entry.value);
   } else {
-    state.selected = null;
-    state.selectedNet = entry.value;
-    showNetSelection(view, state, entry.value);
+    state.sequence.activePin = '';
+    selectNet(entry.value);
+    renderSequenceControls();
+    return;
   }
   refreshConnectivity();
   renderSequenceControls();
@@ -693,6 +774,7 @@ function startSequenceViewer() {
 function closeSequenceViewer() {
   state.sequence.active = false;
   state.sequence.index = -1;
+  state.sequence.activePin = '';
   activeSequenceEntries = [];
   renderSequenceControls();
   render();
@@ -709,7 +791,7 @@ function moveSequenceViewer(direction) {
 function setActiveStepStatus(status) {
   const entry = activeSequenceEntries[state.sequence.index];
   if (!entry) return;
-  const item = state.sequence.items.find((candidate) => sequenceItemKey(candidate) === sequenceItemKey(entry));
+  const item = entry.sequenceItem;
   if (!item) return;
   item.status = item.status === status ? 'pending' : status;
   renderSequenceControls();
@@ -762,9 +844,29 @@ for (const tab of view.sequenceTabs) tab.addEventListener('click', (event) => {
 view.sequencePreviewBack.addEventListener('click', () => closeSequencePreview());
 view.sequencePreviewAdd.addEventListener('click', () => {
   if (!previewSequenceEntry) return;
-  addSequenceEntry(previewSequenceEntry);
+  let editorMessage = '';
+  const selectedPin = view.sequencePreviewPin.selectedOptions[0];
+  const updatedEntry = {
+    ...previewSequenceEntry,
+    pin: selectedPin?.value || '',
+    pinNet: selectedPin?.dataset.net || '',
+  };
+  if (previewSequenceEditIndex != null) {
+    const item = state.sequence.items[previewSequenceEditIndex];
+    if (item) {
+      if (updatedEntry.pin) item.pin = updatedEntry.pin;
+      else delete item.pin;
+      if (updatedEntry.pinNet) item.pinNet = updatedEntry.pinNet;
+      else delete item.pinNet;
+      renderSequenceEditor();
+      editorMessage = `Updated probe pin for ${item.name}.`;
+    }
+  } else {
+    addSequenceEntry(updatedEntry);
+  }
   activeSequenceTab = 'sequence';
   closeSequencePreview();
+  if (editorMessage) view.sequenceEditorStatus.textContent = editorMessage;
 });
 view.sequenceFileInput.addEventListener('change', (event) => openSequenceFile(event.target.files[0]));
 for (const item of view.menuItems) {
@@ -944,7 +1046,14 @@ window.addEventListener('resize', () => {
   if (!view.sequenceWindow.hidden) setSequenceTab(activeSequenceTab);
   render();
 });
+
+function isTextEntryTarget(target) {
+  return target instanceof HTMLElement
+    && (target.matches('input, textarea, select') || target.isContentEditable);
+}
+
 window.addEventListener('keydown', (event) => {
+  if (isTextEntryTarget(event.target)) return;
   if (event.key === 'Escape') {
     if (!view.sequencePreview.hidden) closeSequencePreview();
     else if (!view.sequenceWindow.hidden) closeSequenceEditor();

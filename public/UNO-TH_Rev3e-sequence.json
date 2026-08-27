@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "name": "UNO-TH_Rev3e-Sequence",
+  "boardName": "UNO-TH_Rev3e",
+  "items": [
+    {
+      "type": "Component",
+      "name": "TP_PWRIN",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "PWRIN"
+    },
+    {
+      "type": "Component",
+      "name": "TP_VIN",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "VIN"
+    },
+    {
+      "type": "Component",
+      "name": "TP_5V",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "+5V"
+    },
+    {
+      "type": "Component",
+      "name": "TP_3V3",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "+3V3"
+    },
+    {
+      "type": "Component",
+      "name": "TP_XUSB",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "XUSB"
+    },
+    {
+      "type": "Component",
+      "name": "TP_USBVCC",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "USBVCC"
+    },
+    {
+      "type": "Component",
+      "name": "TP_GATE",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "GATE_CMD"
+    },
+    {
+      "type": "Component",
+      "name": "TP_CMP",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "CMP"
+    },
+    {
+      "type": "Component",
+      "name": "TP_LCMD",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "L13"
+    }
+  ]
+}

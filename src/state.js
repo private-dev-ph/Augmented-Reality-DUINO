@@ -14,6 +14,7 @@ export function createAppState() {
       items: [],
       active: false,
       index: -1,
+      activePin: '',
     },
     view: {
       grid: true,
@@ -52,5 +53,6 @@ export function setBoard(state, board) {
     items: [],
     active: false,
     index: -1,
+    activePin: '',
   };
 }

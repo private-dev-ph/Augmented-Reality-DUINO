@@ -20,6 +20,8 @@
   --text-dim: #777671;
   --border: #d8d2c7;
   --canvas-bg: #dedbd4;
+  --sequence-pin: #5b2aa8;
+  --sequence-pin-fill: rgba(91, 42, 168, .32);
   --overlay: rgba(52, 53, 53, .3);
   --on-accent: #fffaf7;
   --accent2-ink: #343535;
@@ -50,6 +52,8 @@
   --text-dim: #bbb2a7;
   --border: #4c453c;
   --canvas-bg: #302d29;
+  --sequence-pin: #fff36b;
+  --sequence-pin-fill: rgba(255, 243, 107, .4);
   --overlay: rgba(11, 10, 9, .7);
   --on-accent: #fffaf5;
   --accent2-ink: #2c251e;
