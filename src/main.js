@@ -6,6 +6,7 @@ import { createCameraController } from './ar/camera.js';
 import { createCameraTracker } from './ar/camera-tracker.js';
 import { createFourCornerCalibration } from './ar/four-corner-calibration.js';
 import { createBoardOnlySnapshot, createProjectedOverlay } from './ar/projected-overlay.js';
+import { createCornerSmoother } from './ar/tracking-geometry.js';
 import { createBoardRenderer } from './render/board-renderer.js';
 import { createViewport } from './render/viewport.js';
 import { createAppState, setBoard } from './state.js';
@@ -37,7 +38,8 @@ const projectedOverlay = createProjectedOverlay(view.arOverlayCanvas);
 let arMenuOpen = false;
 let calibrationDragIndex = null;
 let projectedSourceCanvas = null;
-const cameraTracker = createCameraTracker(view.arCameraVideo, { onTracking: applyTrackedCorners });
+const trackedCornerSmoother = createCornerSmoother();
+const cameraTracker = createCameraTracker(view.arCameraVideo, { onState: handleCameraTrackerState, onTracking: applyTrackedCorners });
 const camera = createCameraController(view.arCameraVideo, ({ state: cameraState, message }) => {
   const active = cameraState === 'active';
   view.boardWrap.classList.toggle('camera-active', active);
@@ -247,6 +249,7 @@ function applyFourCornerCalibration() {
     matrix: fourCornerCalibration.homography,
   });
   updateArTransparency(100);
+  trackedCornerSmoother.reset();
   cameraTracker.calibrate(fourCornerCalibration.points, view.arCameraVideo.getBoundingClientRect());
   view.arCalibrationOverlay.hidden = true;
   setStatus(view, overlayRendered
@@ -256,8 +259,7 @@ function applyFourCornerCalibration() {
 
 function applyTrackedCorners(tracking) {
   if (!camera.active || !projectedSourceCanvas || tracking.confidence < 0.12) return;
-  const rect = view.arOverlayCanvas.getBoundingClientRect();
-  const points = tracking.points.map((point) => ({ x: point.x * rect.width, y: point.y * rect.height }));
+  const points = trackedCornerSmoother.filter(tracking.points, performance.now());
   if (!fourCornerCalibration.updateTrackingPoints(points)) return;
   projectedOverlay.render({
     boardCanvas: projectedSourceCanvas,
@@ -265,6 +267,14 @@ function applyTrackedCorners(tracking) {
     bounds: state.data.bounds,
     matrix: fourCornerCalibration.homography,
   });
+}
+
+function handleCameraTrackerState(message) {
+  if (message.type === 'calibrated') {
+    setStatus(view, `Markerless tracking is active using ${message.featureCount} board features.`);
+  } else if (message.type === 'calibration-failed' || message.state === 'error') {
+    setStatus(view, message.message || 'Markerless tracking is unavailable. Calibrate again with the board fully visible.');
+  }
 }
 
 async function toggleCameraMode() {
