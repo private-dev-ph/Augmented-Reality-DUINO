@@ -9,6 +9,7 @@ const PROFILES = {
   accuracy: { intervalMs: 1000 / 20, maxEdge: 720, anchorInterval: 4 },
 };
 const WORKER_START_TIMEOUT_MS = 25_000;
+const EDGE_DETECTION_TIMEOUT_MS = 8_000;
 
 function selectedProfile() {
   let name = 'balanced';
@@ -40,6 +41,8 @@ export function createCameraTracker(video, {
   let profile = selectedProfile();
   let generation = 0;
   let debugEnabled = false;
+  let edgeRequestSerial = 0;
+  let edgeRequest = null;
 
   function displaySize(frameRect = video.getBoundingClientRect()) {
     return { width: frameRect.width, height: frameRect.height };
@@ -67,6 +70,13 @@ export function createCameraTracker(video, {
   }
 
   function stop() {
+    if (edgeRequest) {
+      const request = edgeRequest;
+      edgeRequest = null;
+      window.clearTimeout(request.timeoutId);
+      request.bitmap?.close?.();
+      request.reject(new Error('Edge detection was cancelled because the camera tracker stopped.'));
+    }
     generation += 1;
     active = false;
     ready = false;
@@ -80,7 +90,7 @@ export function createCameraTracker(video, {
   }
 
   async function captureFrame() {
-    if (!active || !ready || pending || calibrating || !worker || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+    if (!active || !ready || pending || calibrating || edgeRequest || !worker || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
     const captureGeneration = generation;
     const captureWorker = worker;
     pending = true;
@@ -95,7 +105,11 @@ export function createCameraTracker(video, {
       bitmap = null;
     } catch {
       bitmap?.close?.();
-      if (worker === captureWorker && generation === captureGeneration) pending = false;
+      if (worker === captureWorker && generation === captureGeneration) {
+        pending = false;
+        const request = edgeRequest;
+        if (request?.waitingForFrame) startEdgeCapture(request);
+      }
     }
   }
 
@@ -106,7 +120,7 @@ export function createCameraTracker(video, {
       captureScheduled = false;
       if (!active || !ready) return;
       const now = performance.now();
-      if (now - lastCaptureTime >= profile.intervalMs && !pending && !calibrating && !document.hidden) {
+      if (now - lastCaptureTime >= profile.intervalMs && !pending && !calibrating && !edgeRequest && !document.hidden) {
         lastCaptureTime = now;
         captureFrame();
       }
@@ -163,8 +177,97 @@ export function createCameraTracker(video, {
     }
   }
 
+  function startEdgeCapture(request) {
+    if (!request || edgeRequest !== request || (!request.waitingForFrame && request.captureStarted)) return;
+    request.waitingForFrame = false;
+    request.captureStarted = true;
+    request.ownsPending = true;
+    pending = true;
+    const { id: requestId, generation: detectionGeneration, worker: detectionWorker, normalizedPoints } = request;
+    Promise.resolve()
+      .then(() => createImageBitmap(video))
+      .then((bitmap) => {
+        if (!edgeRequest || edgeRequest.id !== requestId || worker !== detectionWorker || generation !== detectionGeneration || !active || !ready) {
+          bitmap.close?.();
+          return;
+        }
+        edgeRequest.bitmap = bitmap;
+        detectionWorker.postMessage({
+          type: 'detect-edges',
+          requestId,
+          bitmap,
+          points: normalizedPoints,
+          expansionRatio: request.expansionRatio,
+        }, [bitmap]);
+        edgeRequest.bitmap = null;
+      })
+      .catch((error) => {
+        if (edgeRequest?.id !== requestId) return;
+        settleEdgeRequest(error?.message ? new Error(`The edge-detection frame could not be captured: ${error.message}`) : new Error('The edge-detection frame could not be captured.'));
+      });
+  }
+
+  function settleEdgeRequest(error, result) {
+    const request = edgeRequest;
+    if (!request) return;
+    edgeRequest = null;
+    window.clearTimeout(request.timeoutId);
+    if (request.ownsPending) pending = false;
+    if (error) request.reject(error);
+    else request.resolve(result);
+    scheduleCapture();
+  }
+
+  function detectEdges(points, frameRect = video.getBoundingClientRect(), { expansionRatio = 0.1 } = {}) {
+    if (!active || !worker) return Promise.reject(new Error('The tracking worker is not active.'));
+    if (!ready) return Promise.reject(new Error('The on-device vision engine is still loading.'));
+    if (edgeRequest) return Promise.reject(new Error('Edge detection is already in progress.'));
+    if (calibrating) return Promise.reject(new Error('Wait for calibration to finish before detecting edges.'));
+    if (!Array.isArray(points) || points.length !== 4 || points.some((point) => !Number.isFinite(point?.x) || !Number.isFinite(point?.y))) {
+      return Promise.reject(new Error('Edge detection needs four finite calibration corners.'));
+    }
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      return Promise.reject(new Error('The camera frame is not ready yet.'));
+    }
+    const safeExpansion = Math.max(0.04, Math.min(0.2, Number(expansionRatio) || 0.1));
+    const detectionGeneration = generation;
+    const detectionWorker = worker;
+    const normalizedPoints = points.map((point) => displayPointToVideo(point, videoSize(), displaySize(frameRect)));
+    const requestId = ++edgeRequestSerial;
+    return new Promise((resolve, reject) => {
+      const timeoutId = window.setTimeout(() => {
+        if (edgeRequest?.id !== requestId) return;
+        settleEdgeRequest(new Error('Edge detection timed out. Try holding the board steadier and run Detect edge again.'));
+      }, EDGE_DETECTION_TIMEOUT_MS);
+      edgeRequest = {
+        id: requestId,
+        generation: detectionGeneration,
+        worker: detectionWorker,
+        frameRect,
+        normalizedPoints,
+        expansionRatio: safeExpansion,
+        waitingForFrame: pending,
+        captureStarted: false,
+        ownsPending: false,
+        timeoutId,
+        resolve,
+        reject,
+      };
+      if (!edgeRequest.waitingForFrame) startEdgeCapture(edgeRequest);
+    });
+  }
+
   function reset() {
-    pending = false;
+    const request = edgeRequest;
+    if (request) {
+      edgeRequest = null;
+      window.clearTimeout(request.timeoutId);
+      request.bitmap?.close?.();
+      request.reject(new Error('Edge detection was cancelled by reset.'));
+      if (request.ownsPending) pending = false;
+    } else {
+      pending = false;
+    }
     calibrating = false;
     worker?.postMessage({ type: 'reset' });
   }
@@ -194,8 +297,34 @@ export function createCameraTracker(video, {
     createdWorker.addEventListener('message', (event) => {
       if (worker !== createdWorker || generation !== workerGeneration) return;
       const message = event.data || {};
+      if (message.type === 'edges-detected' || message.type === 'edge-detection-failed') {
+        if (!edgeRequest || message.requestId !== edgeRequest.id || worker !== edgeRequest.worker || generation !== edgeRequest.generation) return;
+        if (message.type === 'edge-detection-failed') {
+          settleEdgeRequest(new Error(message.message || 'The board edges could not be detected.'));
+        } else if (!Array.isArray(message.points) || message.points.length !== 4) {
+          settleEdgeRequest(new Error('The edge detector returned an invalid board quadrilateral.'));
+        } else {
+          const request = edgeRequest;
+          const sourceSize = videoSize();
+          const displayPoints = message.points.map((point) => videoPointToDisplay(
+            { x: point.x, y: point.y },
+            sourceSize,
+            displaySize(request.frameRect),
+          ));
+          settleEdgeRequest(null, {
+            points: displayPoints,
+            confidence: Number(message.confidence) || 0,
+            diagnostics: message.diagnostics || {},
+          });
+        }
+        return;
+      }
       if (message.quality) onQuality(message.quality);
-      if (message.type === 'frame') pending = false;
+      if (message.type === 'frame') {
+        pending = false;
+        const request = edgeRequest;
+        if (request?.waitingForFrame) startEdgeCapture(request);
+      }
       if (message.type === 'calibrated' || message.type === 'calibration-failed') {
         pending = false;
         calibrating = false;
@@ -246,6 +375,7 @@ export function createCameraTracker(video, {
     get active() { return active; },
     get ready() { return ready; },
     calibrate,
+    detectEdges,
     reset,
     setDebugEnabled,
     start,

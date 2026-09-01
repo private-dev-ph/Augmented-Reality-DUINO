@@ -5,6 +5,7 @@ const OPENCV_SCRIPT_URL = '/vendor/opencv/opencv-4.13.0-arduino-r2.js';
 const OPENCV_WASM_URL = '/vendor/opencv/opencv-4.13.0-arduino-r2.wasm';
 const CALIBRATION_MAX_EDGE = 1100;
 const CANONICAL_LONG_EDGE = 640;
+const EDGE_DETECTION_MAX_EDGE = 640;
 const MIN_REFERENCE_FEATURES = 45;
 const MAX_REFERENCE_FEATURES = 520;
 const MAX_CURRENT_FEATURES = 760;
@@ -190,6 +191,226 @@ function bitmapToGray(bitmap, maximumEdge) {
     rgba.delete();
   }
   return gray;
+}
+
+function edgeSearchBounds(points, width, height, expansionRatio) {
+  const safeExpansion = clamp(Number(expansionRatio) || 0.1, 0.04, 0.2);
+  const minX = Math.min(...points.map((point) => point.x));
+  const maxX = Math.max(...points.map((point) => point.x));
+  const minY = Math.min(...points.map((point) => point.y));
+  const maxY = Math.max(...points.map((point) => point.y));
+  const marginX = Math.max(4, (maxX - minX) * safeExpansion);
+  const marginY = Math.max(4, (maxY - minY) * safeExpansion);
+  return {
+    x0: clamp(Math.floor(minX - marginX), 0, width - 1),
+    y0: clamp(Math.floor(minY - marginY), 0, height - 1),
+    x1: clamp(Math.ceil(maxX + marginX), 0, width - 1),
+    y1: clamp(Math.ceil(maxY + marginY), 0, height - 1),
+  };
+}
+
+function buildGradient(gray) {
+  const width = gray.cols;
+  const height = gray.rows;
+  const pixels = gray.data;
+  const gradientX = new Float32Array(width * height);
+  const gradientY = new Float32Array(width * height);
+  const magnitude = new Float32Array(width * height);
+  for (let y = 1; y < height - 1; y += 1) {
+    const row = y * width;
+    for (let x = 1; x < width - 1; x += 1) {
+      const index = row + x;
+      const gx = (pixels[index + 1] - pixels[index - 1]) * 0.5;
+      const gy = (pixels[index + width] - pixels[index - width]) * 0.5;
+      gradientX[index] = gx;
+      gradientY[index] = gy;
+      magnitude[index] = Math.hypot(gx, gy);
+    }
+  }
+  return { gradientX, gradientY, magnitude };
+}
+
+function gradientThreshold(magnitude, width, bounds) {
+  let count = 0;
+  let total = 0;
+  let squared = 0;
+  for (let y = bounds.y0 + 1; y < bounds.y1; y += 3) {
+    for (let x = bounds.x0 + 1; x < bounds.x1; x += 3) {
+      const value = magnitude[y * width + x];
+      total += value;
+      squared += value * value;
+      count += 1;
+    }
+  }
+  const mean = total / Math.max(1, count);
+  const deviation = Math.sqrt(Math.max(0, squared / Math.max(1, count) - mean * mean));
+  return Math.max(7, mean + deviation * 0.35);
+}
+
+function sampleDirectionalGradient(gradients, width, height, point, normal) {
+  const x = Math.round(point.x);
+  const y = Math.round(point.y);
+  if (x < 1 || y < 1 || x >= width - 1 || y >= height - 1) return 0;
+  const index = y * width + x;
+  return Math.abs(gradients.gradientX[index] * normal.x + gradients.gradientY[index] * normal.y);
+}
+
+function scoreCandidateLine(gradients, width, height, bounds, segment, offset, angle, threshold) {
+  const baseTangent = {
+    x: segment.x / segment.length,
+    y: segment.y / segment.length,
+  };
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
+  const tangent = {
+    x: baseTangent.x * cosine - baseTangent.y * sine,
+    y: baseTangent.x * sine + baseTangent.y * cosine,
+  };
+  const normal = { x: -tangent.y, y: tangent.x };
+  const center = {
+    x: segment.cx + segment.normal.x * offset,
+    y: segment.cy + segment.normal.y * offset,
+  };
+  const sampleCount = clamp(Math.round(segment.length / 2), 56, 220);
+  let total = 0;
+  let strong = 0;
+  let run = 0;
+  let longestRun = 0;
+  let used = 0;
+  for (let index = 0; index < sampleCount; index += 1) {
+    const progress = -0.08 + (index / Math.max(1, sampleCount - 1)) * 1.16;
+    const point = {
+      x: center.x + tangent.x * segment.length * (progress - 0.5),
+      y: center.y + tangent.y * segment.length * (progress - 0.5),
+    };
+    if (point.x < bounds.x0 || point.y < bounds.y0 || point.x > bounds.x1 || point.y > bounds.y1) {
+      run = 0;
+      continue;
+    }
+    const value = sampleDirectionalGradient(gradients, width, height, point, normal);
+    total += value;
+    used += 1;
+    if (value >= threshold) {
+      strong += 1;
+      run += 1;
+      longestRun = Math.max(longestRun, run);
+    } else {
+      run = 0;
+    }
+  }
+  if (used < sampleCount * 0.55) return null;
+  const coverage = strong / Math.max(1, used);
+  const continuity = longestRun / Math.max(1, used);
+  if (coverage < 0.22 || continuity < 0.08) return null;
+  const mean = total / Math.max(1, used);
+  return {
+    point: center,
+    tangent,
+    normal,
+    score: mean * (0.35 + coverage * 0.65) * (0.65 + continuity * 0.35),
+    coverage,
+    continuity,
+  };
+}
+
+function lineIntersection(first, second) {
+  const denominator = first.tangent.x * second.tangent.y - first.tangent.y * second.tangent.x;
+  if (Math.abs(denominator) < 1e-5) return null;
+  const delta = { x: second.point.x - first.point.x, y: second.point.y - first.point.y };
+  const alongFirst = (delta.x * second.tangent.y - delta.y * second.tangent.x) / denominator;
+  return {
+    x: first.point.x + first.tangent.x * alongFirst,
+    y: first.point.y + first.tangent.y * alongFirst,
+  };
+}
+
+function detectBoardEdges(bitmap, normalizedPoints, expansionRatio = 0.1) {
+  const startedAt = performance.now();
+  let gray = null;
+  try {
+    gray = bitmapToGray(bitmap, EDGE_DETECTION_MAX_EDGE);
+    const width = gray.cols;
+    const height = gray.rows;
+    const initial = normalizedPoints.map((point) => ({
+      x: clamp(Number(point.x), 0, 1) * Math.max(1, width - 1),
+      y: clamp(Number(point.y), 0, 1) * Math.max(1, height - 1),
+    }));
+    if (initial.length !== 4 || !isConvexQuad(initial)) throw new Error('The four calibration corners do not form a valid board quadrilateral.');
+    const bounds = edgeSearchBounds(initial, width, height, expansionRatio);
+    const gradients = buildGradient(gray);
+    const threshold = gradientThreshold(gradients.magnitude, width, bounds);
+    const sides = [];
+    const sideScores = [];
+    for (let sideIndex = 0; sideIndex < 4; sideIndex += 1) {
+      const start = initial[sideIndex];
+      const end = initial[(sideIndex + 1) % 4];
+      const delta = { x: end.x - start.x, y: end.y - start.y };
+      const length = Math.hypot(delta.x, delta.y);
+      if (!Number.isFinite(length) || length < 12) throw new Error('The calibration area is too small for edge detection.');
+      const tangent = { x: delta.x / length, y: delta.y / length };
+      const normal = { x: -tangent.y, y: tangent.x };
+      const segment = {
+        x: delta.x,
+        y: delta.y,
+        length,
+        cx: (start.x + end.x) / 2,
+        cy: (start.y + end.y) / 2,
+        normal,
+      };
+      const offsetLimit = Math.max(4, Math.min(Math.max(width, height) * 0.14, length * 0.18));
+      let best = null;
+      let second = null;
+      for (let angleIndex = -3; angleIndex <= 3; angleIndex += 1) {
+        const angle = angleIndex * radians(5);
+        for (let offsetIndex = -14; offsetIndex <= 14; offsetIndex += 1) {
+          const offset = (offsetIndex / 14) * offsetLimit;
+          const candidate = scoreCandidateLine(gradients, width, height, bounds, segment, offset, angle, threshold);
+          if (!candidate) continue;
+          if (!best || candidate.score > best.score) {
+            second = best;
+            best = candidate;
+          } else if (!second || candidate.score > second.score) {
+            second = candidate;
+          }
+        }
+      }
+      if (!best || best.score < threshold * 0.3) throw new Error(`The ${['top', 'right', 'bottom', 'left'][sideIndex]} board edge is not clear enough.`);
+      const margin = second?.score > 0 ? best.score / second.score : 2;
+      if (margin < 1.015) throw new Error(`The ${['top', 'right', 'bottom', 'left'][sideIndex]} board edge is ambiguous.`);
+      sides.push(best);
+      sideScores.push({ score: Math.round(best.score * 100) / 100, coverage: Math.round(best.coverage * 1000) / 1000 });
+    }
+    const result = [
+      lineIntersection(sides[3], sides[0]),
+      lineIntersection(sides[0], sides[1]),
+      lineIntersection(sides[1], sides[2]),
+      lineIntersection(sides[2], sides[3]),
+    ];
+    const initialArea = Math.abs(signedArea(initial));
+    const resultArea = Math.abs(signedArea(result));
+    const displacement = result.reduce((max, point, index) => Math.max(max, Math.hypot(point.x - initial[index].x, point.y - initial[index].y)), 0);
+    if (!isConvexQuad(result) || !validateCalibrationQuad(result, width, height)) throw new Error('The detected edges do not form a usable board quadrilateral.');
+    if (result.some((point) => point.x < bounds.x0 - 3 || point.y < bounds.y0 - 3 || point.x > bounds.x1 + 3 || point.y > bounds.y1 + 3)) throw new Error('The detected edges moved outside the calibration area.');
+    if (resultArea < initialArea * 0.5 || resultArea > initialArea * 1.7 || displacement > Math.max(width, height) * 0.22) throw new Error('The detected edges moved too far from the calibration corners.');
+    const averageScore = sideScores.reduce((sum, side) => sum + side.score, 0) / 4;
+    const averageCoverage = sideScores.reduce((sum, side) => sum + side.coverage, 0) / 4;
+    return {
+      points: result.map((point) => ({ x: point.x / Math.max(1, width - 1), y: point.y / Math.max(1, height - 1) })),
+      confidence: clamp((averageScore / Math.max(threshold * 2, 1)) * averageCoverage, 0, 1),
+      diagnostics: {
+        processingMs: Math.round((performance.now() - startedAt) * 10) / 10,
+        searchBounds: {
+          x: Math.round(bounds.x0 / Math.max(1, width - 1) * 1000) / 1000,
+          y: Math.round(bounds.y0 / Math.max(1, height - 1) * 1000) / 1000,
+          width: Math.round((bounds.x1 - bounds.x0) / Math.max(1, width - 1) * 1000) / 1000,
+          height: Math.round((bounds.y1 - bounds.y0) / Math.max(1, height - 1) * 1000) / 1000,
+        },
+        sideScores,
+      },
+    };
+  } finally {
+    safeDelete(gray);
+  }
 }
 
 function analyze(gray) {
@@ -1072,10 +1293,14 @@ function applyProfile(nextProfile) {
   };
 }
 
-function postWorkerError(error, type) {
+function postWorkerError(error, type, requestId = null) {
   const message = error instanceof Error ? error.message : String(error || 'Unexpected on-device tracking error.');
   if (type === 'calibrate') {
     self.postMessage({ type: 'calibration-failed', message });
+    return;
+  }
+  if (type === 'detect-edges') {
+    self.postMessage({ type: 'edge-detection-failed', requestId, message });
     return;
   }
   self.postMessage({ type: 'state', state: 'error', message });
@@ -1083,7 +1308,7 @@ function postWorkerError(error, type) {
 }
 
 self.addEventListener('message', (event) => {
-  const { type, bitmap, points, boardAspect } = event.data || {};
+  const { type, bitmap, points, boardAspect, requestId, expansionRatio } = event.data || {};
   if (type === 'config') {
     applyProfile(event.data.profile);
     debugEnabled = Boolean(event.data.debugEnabled);
@@ -1110,17 +1335,19 @@ self.addEventListener('message', (event) => {
     bitmap.close();
     if (type === 'frame') self.postMessage({ type: 'frame' });
     if (type === 'calibrate') self.postMessage({ type: 'calibration-failed', message: 'The vision runtime is still loading.' });
+    if (type === 'detect-edges') self.postMessage({ type: 'edge-detection-failed', requestId, message: 'The vision runtime is still loading.' });
     return;
   }
   operationQueue = operationQueue
     .then(() => {
       if (type === 'calibrate') calibrate(bitmap, points || [], boardAspect);
+      else if (type === 'detect-edges') self.postMessage({ type: 'edges-detected', requestId, ...detectBoardEdges(bitmap, points || [], expansionRatio) });
       else if (type === 'frame') self.postMessage({ type: 'frame', ...track(bitmap) });
       else bitmap.close();
     })
     .catch((error) => {
       try { bitmap.close(); } catch { /* already consumed */ }
-      postWorkerError(error, type);
+      postWorkerError(error, type, requestId);
     });
 });
 

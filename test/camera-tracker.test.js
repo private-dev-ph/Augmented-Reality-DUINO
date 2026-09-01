@@ -159,3 +159,169 @@ test('debug diagnostics can be enabled live and normalized points use cover geom
     globals.restore();
   }
 });
+
+test('detectEdges maps a worker quadrilateral back through portrait cover geometry', async () => {
+  const globals = installTrackerGlobals(async () => ({ close() {} }));
+  const video = {
+    readyState: 2,
+    videoWidth: 1280,
+    videoHeight: 720,
+    clientWidth: 320,
+    clientHeight: 640,
+    getBoundingClientRect: () => ({ width: 320, height: 640 }),
+    addEventListener() {},
+    removeEventListener() {},
+    requestVideoFrameCallback: () => 1,
+    cancelVideoFrameCallback() {},
+  };
+  const tracker = createCameraTracker(video);
+  tracker.start();
+  globals.workers[0].emit({ type: 'state', state: 'ready' });
+  try {
+    const resultPromise = tracker.detectEdges([
+      { x: 20, y: 150 },
+      { x: 300, y: 150 },
+      { x: 300, y: 490 },
+      { x: 20, y: 490 },
+    ], video.getBoundingClientRect());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const request = globals.workers[0].messages.at(-1);
+    assert.equal(request.type, 'detect-edges');
+    assert.equal(request.points.length, 4);
+    assert.ok(request.points.every((point) => point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1));
+    globals.workers[0].emit({
+      type: 'edges-detected',
+      requestId: request.requestId,
+      points: [
+        { x: 0.4, y: 0.2 },
+        { x: 0.6, y: 0.2 },
+        { x: 0.6, y: 0.8 },
+        { x: 0.4, y: 0.8 },
+      ],
+      confidence: 0.83,
+      diagnostics: { processingMs: 4 },
+    });
+    const result = await resultPromise;
+    assert.deepEqual(result.points.map((point) => ({ x: Math.round(point.x), y: Math.round(point.y) })), [
+      { x: 46, y: 128 },
+      { x: 274, y: 128 },
+      { x: 274, y: 512 },
+      { x: 46, y: 512 },
+    ]);
+    assert.equal(result.confidence, 0.83);
+  } finally {
+    tracker.stop();
+    globals.restore();
+  }
+});
+
+test('detectEdges rejects a current-session capture failure', async () => {
+  const globals = installTrackerGlobals(() => Promise.reject(new Error('bitmap unavailable')));
+  const video = {
+    readyState: 2,
+    videoWidth: 1280,
+    videoHeight: 720,
+    clientWidth: 320,
+    clientHeight: 640,
+    getBoundingClientRect: () => ({ width: 320, height: 640 }),
+    addEventListener() {},
+    removeEventListener() {},
+    requestVideoFrameCallback: () => 1,
+    cancelVideoFrameCallback() {},
+  };
+  const tracker = createCameraTracker(video);
+  tracker.start();
+  globals.workers[0].emit({ type: 'state', state: 'ready' });
+  try {
+    await assert.rejects(
+      tracker.detectEdges([{ x: 20, y: 150 }, { x: 300, y: 150 }, { x: 300, y: 490 }, { x: 20, y: 490 }], video.getBoundingClientRect()),
+      /edge-detection frame could not be captured: bitmap unavailable/,
+    );
+  } finally {
+    tracker.stop();
+    globals.restore();
+  }
+});
+
+test('detectEdges rejects when the tracker stops before capture resolves', async () => {
+  const bitmapRequest = deferred();
+  const globals = installTrackerGlobals(() => bitmapRequest.promise);
+  const video = {
+    readyState: 2,
+    videoWidth: 1280,
+    videoHeight: 720,
+    clientWidth: 320,
+    clientHeight: 640,
+    getBoundingClientRect: () => ({ width: 320, height: 640 }),
+    addEventListener() {},
+    removeEventListener() {},
+    requestVideoFrameCallback: () => 1,
+    cancelVideoFrameCallback() {},
+  };
+  const tracker = createCameraTracker(video);
+  tracker.start();
+  globals.workers[0].emit({ type: 'state', state: 'ready' });
+  const resultPromise = tracker.detectEdges([{ x: 20, y: 150 }, { x: 300, y: 150 }, { x: 300, y: 490 }, { x: 20, y: 490 }], video.getBoundingClientRect());
+  tracker.stop();
+  await assert.rejects(resultPromise, /camera tracker stopped/);
+  const bitmap = { closed: false, close() { this.closed = true; } };
+  bitmapRequest.resolve(bitmap);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(bitmap.closed, true);
+  globals.restore();
+});
+
+test('detectEdges queues behind one ordinary frame without capturing a duplicate', async () => {
+  const ordinaryCapture = deferred();
+  const edgeCapture = deferred();
+  let captureCount = 0;
+  let frameCallback = null;
+  const globals = installTrackerGlobals(() => {
+    captureCount += 1;
+    return captureCount === 1 ? ordinaryCapture.promise : edgeCapture.promise;
+  });
+  const video = {
+    readyState: 2,
+    videoWidth: 1280,
+    videoHeight: 720,
+    clientWidth: 320,
+    clientHeight: 640,
+    getBoundingClientRect: () => ({ width: 320, height: 640 }),
+    addEventListener() {},
+    removeEventListener() {},
+    requestVideoFrameCallback: (callback) => { frameCallback = callback; return 1; },
+    cancelVideoFrameCallback() {},
+  };
+  const tracker = createCameraTracker(video);
+  tracker.start();
+  globals.workers[0].emit({ type: 'state', state: 'ready' });
+  frameCallback();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(captureCount, 1);
+  const resultPromise = tracker.detectEdges([
+    { x: 20, y: 150 },
+    { x: 300, y: 150 },
+    { x: 300, y: 490 },
+    { x: 20, y: 490 },
+  ], video.getBoundingClientRect());
+  assert.equal(captureCount, 1);
+  ordinaryCapture.resolve({ close() {} });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(globals.workers[0].messages.at(-1).type, 'frame');
+  globals.workers[0].emit({ type: 'frame' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(captureCount, 2);
+  edgeCapture.resolve({ close() {} });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const request = globals.workers[0].messages.at(-1);
+  assert.equal(request.type, 'detect-edges');
+  globals.workers[0].emit({
+    type: 'edges-detected',
+    requestId: request.requestId,
+    points: [{ x: .4, y: .2 }, { x: .6, y: .2 }, { x: .6, y: .8 }, { x: .4, y: .8 }],
+    confidence: .8,
+  });
+  await assert.doesNotReject(resultPromise);
+  tracker.stop();
+  globals.restore();
+});

@@ -22,6 +22,13 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
       '--border': styles.getPropertyValue('--border').trim() || '#d8d2c7',
       '--sequence-pin': styles.getPropertyValue('--sequence-pin').trim() || '#5b2aa8',
       '--sequence-pin-fill': styles.getPropertyValue('--sequence-pin-fill').trim() || 'rgba(91, 42, 168, .32)',
+      '--sequence-selection': styles.getPropertyValue('--sequence-selection').trim() || '#6f2dbd',
+      '--sequence-selection-fill': styles.getPropertyValue('--sequence-selection-fill').trim() || 'rgba(111, 45, 189, .30)',
+      '--selected-net': styles.getPropertyValue('--selected-net').trim() || '#a45b00',
+      '--connected-net': styles.getPropertyValue('--connected-net').trim() || '#007f8b',
+      '--connected-component': styles.getPropertyValue('--connected-component').trim() || '#007f8b',
+      '--unfocused-net': styles.getPropertyValue('--unfocused-net').trim() || '#6f6b65',
+      '--unfocused-net-opacity': styles.getPropertyValue('--unfocused-net-opacity').trim() || '.08',
     };
     themeCacheKey = mode;
   }
@@ -253,24 +260,31 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     }
   }
 
-  function drawFeatures(features) {
-    const focusActive = connectivityFocusActive();
+  function drawFeatures(features, { isolateNets = null } = {}) {
+    const isolated = isolateNets instanceof Set;
+    const focusActive = isolated ? false : connectivityFocusActive();
     for (const feature of features) {
-      if (!isFeatureVisible(feature)) continue;
+      const netName = String(feature.net || '');
+      if (isolated && !isolateNets.has(netName)) continue;
+      if (!isolated && !isFeatureVisible(feature)) continue;
       if (isNetTrace(feature)) continue;
       const isNetFeature = feature.source === 'net';
-      const netName = String(feature.net || '');
       const isSelectedNet = Boolean(netName && netName === state.selectedNet);
-      const isConnectedNet = Boolean(focusActive && netName && state.connectivity.nets.has(netName));
+      const isConnectedNet = Boolean(netName && (isolated ? isolateNets.has(netName) : focusActive && state.connectivity.nets.has(netName)));
+      const isUnfocusedNet = !isolated && focusActive && isNetFeature && netName && !isConnectedNet;
       const layerName = String(feature.layer || '');
       if (feature.type === 'circle') {
         const screenPoint = viewport.screen({ x: num(feature.x), y: num(feature.y) });
         const radius = Math.max(0.5, num(feature.r, 0.2) * state.viewport.scale);
-        const featureColor = isSelectedNet ? '#fff200' : isConnectedNet ? '#5edbff' : layerColor(layerName);
+        const featureColor = isSelectedNet
+          ? themeColor('--selected-net', '#a45b00')
+          : isConnectedNet
+            ? themeColor('--connected-net', '#007f8b')
+            : isUnfocusedNet ? themeColor('--unfocused-net', '#6f6b65') : layerColor(layerName);
         context.save();
         context.strokeStyle = featureColor;
         context.fillStyle = featureColor;
-        context.globalAlpha = focusActive && netName && !isConnectedNet ? 0.12 : layerName.includes('Mask') ? 0.35 : 0.8;
+        context.globalAlpha = isolated ? 1 : isUnfocusedNet ? Number(themeColor('--unfocused-net-opacity', '0.08')) : layerName.includes('Mask') ? 0.35 : 0.8;
         context.lineWidth = Math.max(0.5, num(feature.width, 0.1) * state.viewport.scale) * (isSelectedNet ? 2 : isConnectedNet ? 1.35 : 1);
         context.beginPath();
         context.arc(screenPoint.x, screenPoint.y, radius, 0, Math.PI * 2);
@@ -282,13 +296,17 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
 
       const points = featurePoints(feature);
       if (points.length < 2) continue;
-      const featureColor = isSelectedNet ? '#fff200' : isConnectedNet ? '#5edbff' : layerColor(layerName);
+      const featureColor = isSelectedNet
+        ? themeColor('--selected-net', '#a45b00')
+        : isConnectedNet
+          ? themeColor('--connected-net', '#007f8b')
+          : isUnfocusedNet ? themeColor('--unfocused-net', '#6f6b65') : layerColor(layerName);
       const width = Math.max(0.5, num(feature.width, 0.1) * state.viewport.scale);
       const closed = ['poly', 'polygon', 'contour'].includes(feature.type);
       context.save();
       context.strokeStyle = featureColor;
       context.fillStyle = featureColor;
-      context.globalAlpha = focusActive && netName && !isConnectedNet ? 0.12 : layerName.includes('Courtyard') ? 0.38 : layerName.includes('Fab') ? 0.5 : 0.9;
+      context.globalAlpha = isolated ? 1 : isUnfocusedNet ? Number(themeColor('--unfocused-net-opacity', '0.08')) : layerName.includes('Courtyard') ? 0.38 : layerName.includes('Fab') ? 0.5 : 0.9;
       context.lineWidth = width * (isSelectedNet ? 2 : isConnectedNet ? 1.35 : 1);
       path(points, closed);
       if (closed) context.fill();
@@ -298,15 +316,21 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
 
     for (const traceGroup of state.data.traceGroups || []) {
       const { sample } = traceGroup;
-      if (!isFeatureVisible(sample)) continue;
+      const netName = String(sample.net || '');
+      if (isolated && !isolateNets.has(netName)) continue;
+      if (!isolated && !isFeatureVisible(sample)) continue;
       if (!traceGroup.bounds) traceGroup.bounds = boundsForPoints(traceGroup.paths.flat());
       if (!intersects(traceGroup.bounds, visibleBounds())) continue;
-      const netName = String(sample.net || '');
       const isSelectedNet = Boolean(netName && netName === state.selectedNet);
-      const isConnectedNet = Boolean(focusActive && netName && state.connectivity.nets.has(netName));
+      const isConnectedNet = Boolean(netName && (isolated ? isolateNets.has(netName) : focusActive && state.connectivity.nets.has(netName)));
       const layerName = String(sample.layer || '');
-      const traceColor = isSelectedNet ? '#fff200' : isConnectedNet ? '#5edbff' : layerColor(layerName);
-      const opacity = focusActive && netName && !isConnectedNet ? 0.12 : 0.95;
+      const isUnfocusedNet = !isolated && focusActive && netName && !isConnectedNet;
+      const traceColor = isSelectedNet
+        ? themeColor('--selected-net', '#a45b00')
+        : isConnectedNet
+          ? themeColor('--connected-net', '#007f8b')
+          : isUnfocusedNet ? themeColor('--unfocused-net', '#6f6b65') : layerColor(layerName);
+      const opacity = isolated ? 1 : isUnfocusedNet ? Number(themeColor('--unfocused-net-opacity', '0.08')) : 0.95;
       const width = Math.max(0.5, num(sample.width, 0.1) * state.viewport.scale)
         * (isSelectedNet ? 2 : isConnectedNet ? 1.35 : 1);
 
@@ -389,7 +413,7 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     return Array.isArray(points) && points.length > 1 ? [pointsOf(points)] : [];
   }
 
-  function drawLabel(text, worldPoint, color, selected = false) {
+  function drawLabel(text, worldPoint, color, selected = false, backgroundOpacity = 0.9) {
     if (!text || !worldPoint) return;
     const screenPoint = viewport.screen(worldPoint);
     const fontSize = Math.max(9, Math.min(14, 9 * state.viewport.scale / 5));
@@ -404,7 +428,7 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     context.textBaseline = 'alphabetic';
     const width = context.measureText(text).width;
     context.fillStyle = canvasColor;
-    context.globalAlpha = 0.9;
+    context.globalAlpha = backgroundOpacity;
     context.fillRect(2, -fontSize - 7, width + 8, fontSize + 8);
     context.strokeStyle = selected ? color : borderColor;
     context.lineWidth = 1;
@@ -469,12 +493,12 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     }
   }
 
-  function drawPads(component, opacity = 1) {
+  function drawPads(component, opacity = 1, padColor = '#f5c542') {
     const canvasColor = themeColor('--canvas-bg', '#dedbd4');
     const holes = [];
     context.save();
-    context.strokeStyle = '#f5c542';
-    context.fillStyle = '#f5c54255';
+    context.strokeStyle = padColor;
+    context.fillStyle = `${padColor}55`;
     context.globalAlpha = opacity;
     context.lineWidth = Math.max(1, 1 / state.viewport.scale);
     context.beginPath();
@@ -524,7 +548,7 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     const radiusY = Math.max(4, height * state.viewport.scale / 2 + 3);
     const circular = String(pad.shape || '').toLowerCase().includes('circle');
     context.save();
-    context.fillStyle = themeColor('--sequence-pin-fill', 'rgba(91, 42, 168, .32)');
+    context.fillStyle = themeColor('--sequence-selection-fill', 'rgba(111, 45, 189, .30)');
     context.lineWidth = 1;
     context.beginPath();
     if (circular) context.ellipse(position.x, position.y, radiusX, radiusY, 0, 0, Math.PI * 2);
@@ -535,7 +559,7 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     context.strokeStyle = themeColor('--canvas-bg', '#dedbd4');
     context.lineWidth = 5;
     context.stroke();
-    context.strokeStyle = themeColor('--sequence-pin', '#5b2aa8');
+    context.strokeStyle = themeColor('--sequence-selection', '#6f2dbd');
     context.lineWidth = 2.5;
     context.setLineDash([5, 3]);
     context.stroke();
@@ -626,7 +650,7 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
       context.lineWidth = Math.max(2, fontSize / 4);
       context.strokeStyle = canvasColor;
       context.strokeText(pinName, position.x, position.y);
-      context.fillStyle = pinName === sequencePin ? themeColor('--sequence-pin', '#5b2aa8') : color;
+      context.fillStyle = pinName === sequencePin ? themeColor('--sequence-selection', '#6f2dbd') : color;
       context.fillText(pinName, position.x, position.y);
     }
     context.restore();
@@ -726,25 +750,28 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     context.restore();
   }
 
-  function drawComponents(components) {
-    if (!state.view.showComponents) return;
-    const focusActive = connectivityFocusActive();
+  function drawComponents(components, { isolate = false } = {}) {
+    if (!state.view.showComponents && !isolate) return;
+    const focusActive = isolate ? false : connectivityFocusActive();
     for (const component of components) {
       const layerName = layerOf(component);
       const position = positionOf(component);
       const selected = component === state.selected;
       const connected = state.connectivity.components.has(component);
-      const opacity = focusActive && !connected ? 0.14 : 1;
+      const opacity = isolate ? 1 : focusActive && !connected ? 0.14 : 1;
       const screenPoint = viewport.screen(position);
-      const componentColor = selected ? '#fff200' : connected && focusActive ? '#5edbff' : layerColor(layerName);
+      const sequenceSelected = selected && state.sequence.active;
+      const componentColor = selected
+        ? sequenceSelected ? themeColor('--sequence-selection', '#6f2dbd') : themeColor('--selected-net', '#a45b00')
+        : connected && (focusActive || isolate) ? themeColor('--connected-component', '#007f8b') : layerColor(layerName);
 
-      if (state.view.showFootprints) {
+      if (state.view.showFootprints || isolate) {
         for (const key of ['outline', 'courtyard', 'silkscreen']) {
           for (const localPoints of componentPaths(component, key)) {
             const points = localPoints.map((value) => transformLocal(value, component));
             context.save();
             context.strokeStyle = key === 'courtyard' ? '#c586ff' : key === 'silkscreen' ? '#f2f2f2' : componentColor;
-            context.globalAlpha = opacity * (key === 'courtyard' ? 0.45 : key === 'silkscreen' ? 0.9 : 0.95);
+            context.globalAlpha = isolate ? 1 : opacity * (key === 'courtyard' ? 0.45 : key === 'silkscreen' ? 0.9 : 0.95);
             context.lineWidth = Math.max(1, (key === 'outline' ? 0.12 : 0.08) * state.viewport.scale);
             if (key === 'courtyard') context.setLineDash([4 / state.viewport.scale, 3 / state.viewport.scale]);
             path(points, true);
@@ -752,7 +779,7 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
             context.restore();
           }
         }
-        drawPads(component, opacity);
+        drawPads(component, opacity, selected ? componentColor : '#f5c542');
       }
       if (selected && state.sequence.active && state.sequence.activePin) {
         drawSequencePinHighlight(component, state.sequence.activePin);
@@ -774,9 +801,9 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
       context.lineTo(screenPoint.x, screenPoint.y + radius * 2);
       context.stroke();
 
-      if ((state.view.showLabels && state.viewport.scale > 4) || selected) {
-        const labelColor = selected ? themeColor('--accent', '#e85a4f') : themeColor('--text', '#343535');
-        drawLabel(refOf(component), position, labelColor, selected);
+      if (isolate || (state.view.showLabels && state.viewport.scale > 4) || selected) {
+        const labelColor = selected ? componentColor : themeColor('--text', '#343535');
+        drawLabel(refOf(component), position, labelColor, selected, isolate ? 1 : 0.9);
       }
       context.restore();
     }
@@ -801,7 +828,7 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     context.restore();
   }
 
-  function render() {
+  function render({ isolateSequenceSelection = false } = {}) {
     refreshThemeColors();
     const { w, h } = viewport.screenSize();
     const canvasColor = themeColor('--canvas-bg', '#dedbd4');
@@ -815,9 +842,10 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
       center: state.viewport.center,
       layers: [...state.layers],
       view: state.view,
+      isolateSequenceSelection: Boolean(isolateSequenceSelection),
       theme: document.documentElement.dataset.mode || 'light',
     });
-    const canUseStaticCache = state.data && !state.selected && !state.selectedNet && staticCacheBoard === state.data && staticCacheKey === cacheKey
+    const canUseStaticCache = !isolateSequenceSelection && state.data && !state.selected && !state.selectedNet && staticCacheBoard === state.data && staticCacheKey === cacheKey
       && staticCache.width === canvas.width && staticCache.height === canvas.height;
     if (canUseStaticCache) {
       context.clearRect(0, 0, w, h);
@@ -836,15 +864,26 @@ export function createBoardRenderer({ canvas, state, viewport, onScaleChange }) 
     const visibleFeatures = spatialQuery('features', currentBounds);
     const visibleComponents = spatialQuery('components', currentBounds);
     const visibleDrills = spatialQuery('drills', currentBounds);
-    drawGrid();
-    drawOutline();
-    drawFeatures(visibleFeatures);
-    drawDrills(visibleDrills);
-    drawComponents(visibleComponents);
-    drawNetLabels(visibleFeatures);
-    drawInTraceNetNames();
-    drawSelectedPinoutNames();
-    if (!state.selected && !state.selectedNet) {
+    const isolatedComponent = isolateSequenceSelection && state.selected ? state.selected : null;
+    const isolatedNet = isolateSequenceSelection && !isolatedComponent ? String(state.selectedNet || '') : '';
+    if (isolatedComponent || isolatedNet) {
+      const isolatedComponents = new Set(state.connectivity?.components || []);
+      const isolatedNets = new Set(state.connectivity?.nets || []);
+      if (isolatedComponent) isolatedComponents.add(isolatedComponent);
+      if (isolatedNet) isolatedNets.add(isolatedNet);
+      drawFeatures(allFeatures(state.data), { isolateNets: isolatedNets });
+      drawComponents([...isolatedComponents], { isolate: true });
+    } else {
+      drawGrid();
+      drawOutline();
+      drawFeatures(visibleFeatures);
+      drawDrills(visibleDrills);
+      drawComponents(visibleComponents);
+      drawNetLabels(visibleFeatures);
+      drawInTraceNetNames();
+      drawSelectedPinoutNames();
+    }
+    if (!isolateSequenceSelection && !state.selected && !state.selectedNet) {
       staticCache.width = canvas.width;
       staticCache.height = canvas.height;
       staticCacheContext.drawImage(canvas, 0, 0);

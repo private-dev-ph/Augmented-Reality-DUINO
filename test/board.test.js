@@ -109,6 +109,39 @@ test('resolves component and net neighborhoods from pad connectivity', () => {
   assert.deepEqual([...fromNet.nets].sort(), ['GND', 'VIN']);
 });
 
+test('scopes sequence connectivity to a selected pin or directly attached net', () => {
+  const board = normalizeBoard({
+    components: [
+      { refDes: 'R1', pads: [
+        { name: ' 1 ', net: ' VIN ' },
+        { name: 'VCC', number: '2', net: ' GND ' },
+        { name: '3' },
+      ] },
+      { refDes: 'C1', pads: [{ name: '1', net: 'VIN' }] },
+      { refDes: 'U1', pads: [{ name: '1', net: 'GND' }] },
+      { refDes: 'L1', pads: [{ name: '1', net: 'VIN' }, { name: '2', net: 'AUX' }] },
+    ],
+    nets: [{ name: 'VIN' }, { name: 'GND' }, { name: 'AUX' }],
+    netPads: {
+      VIN: [{ element: 'R1', pad: '1' }, { element: 'C1', pad: '1' }, { element: 'L1', pad: '1' }],
+      GND: [{ element: 'R1', pad: '2' }, { element: 'U1', pad: '1' }],
+      AUX: [{ element: 'L1', pad: '2' }],
+    },
+  });
+  const r1 = board.components[0];
+  const refs = (result) => [...result.components].map((component) => component.refDes).sort();
+
+  assert.deepEqual([...resolveConnectivity(board, { component: r1, pin: '1' }).nets], ['VIN']);
+  assert.deepEqual(refs(resolveConnectivity(board, { component: r1, pin: '1' })), ['C1', 'L1', 'R1']);
+  assert.deepEqual([...resolveConnectivity(board, { component: r1, pin: '2' }).nets], ['GND']);
+  assert.deepEqual(refs(resolveConnectivity(board, { component: r1, pin: '2' })), ['R1', 'U1']);
+
+  assert.deepEqual([...resolveConnectivity(board, { component: r1, pin: '3', pinNet: ' VIN ' }).nets], ['VIN']);
+  assert.deepEqual(refs(resolveConnectivity(board, { component: r1, pin: 'unknown' })), ['R1']);
+  assert.deepEqual([...resolveConnectivity(board, { net: ' VIN ', directOnly: true }).nets], ['VIN']);
+  assert.deepEqual(refs(resolveConnectivity(board, { net: ' VIN ', directOnly: true })), ['C1', 'L1', 'R1']);
+});
+
 test('normalizes and serializes inspection sequences', () => {
   const sequence = normalizeInspectionSequence({
     name: 'Power inspection',

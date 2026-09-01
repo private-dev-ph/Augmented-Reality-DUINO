@@ -7,6 +7,13 @@ function project(matrix, point) {
   };
 }
 
+export const DEFAULT_PROJECTED_OVERLAY_OPACITY = 1;
+
+export function normalizeOverlayOpacity(value, fallback = DEFAULT_PROJECTED_OVERLAY_OPACITY) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : fallback;
+}
+
 function drawTriangle(context, image, source, destination) {
   const [firstSource, secondSource, thirdSource] = source;
   const [firstDestination, secondDestination, thirdDestination] = destination;
@@ -373,9 +380,10 @@ export function createProjectedOverlay(canvas) {
     canvas.hidden = true;
   }
 
-  function render({ boardCanvas, viewport, bounds, matrix, margin = 0, opacity = 0.7 }) {
+  function render({ boardCanvas, viewport, bounds, matrix, margin = 0, opacity = DEFAULT_PROJECTED_OVERLAY_OPACITY }) {
     if (!boardCanvas || !bounds || !matrix) return false;
     if (!webGlProjector && !context) return false;
+    opacity = normalizeOverlayOpacity(opacity);
     canvas.hidden = false;
     const rect = canvas.getBoundingClientRect();
     const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));

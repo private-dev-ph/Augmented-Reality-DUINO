@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Edge detection worker probe</title>
+  </head>
+  <body>
+    <output id="result">running</output>
+    <script>
+      const output = document.querySelector('#result');
+      const startedAt = performance.now();
+      const source = document.createElement('canvas');
+      source.width = 800;
+      source.height = 600;
+      const context = source.getContext('2d');
+      context.fillStyle = '#30343a';
+      context.fillRect(0, 0, source.width, source.height);
+      const board = [
+        { x: 118, y: 112 },
+        { x: 675, y: 86 },
+        { x: 720, y: 490 },
+        { x: 94, y: 516 },
+      ];
+      context.beginPath();
+      board.forEach((point, index) => index ? context.lineTo(point.x, point.y) : context.moveTo(point.x, point.y));
+      context.closePath();
+      context.fillStyle = '#9aa0a6';
+      context.fill();
+      context.lineWidth = 7;
+      context.strokeStyle = '#f0f2f4';
+      context.stroke();
+      context.save();
+      context.clip();
+      context.strokeStyle = 'rgba(25, 40, 55, .65)';
+      context.lineWidth = 2;
+      for (let y = 130; y < 500; y += 27) {
+        context.beginPath();
+        context.moveTo(100, y);
+        context.lineTo(710, y - 12);
+        context.stroke();
+      }
+      for (let x = 130; x < 710; x += 42) {
+        context.beginPath();
+        context.moveTo(x, 92);
+        context.lineTo(x + 20, 520);
+        context.stroke();
+      }
+      context.restore();
+
+      const worker = new Worker('/src/ar/camera-tracker.worker.js');
+      worker.addEventListener('message', async (event) => {
+        const message = event.data || {};
+        if (message.type === 'state' && message.state === 'ready') {
+          const bitmap = await createImageBitmap(source);
+          worker.postMessage({
+            type: 'detect-edges',
+            requestId: 1,
+            bitmap,
+            points: [
+              { x: .16, y: .18 },
+              { x: .81, y: .14 },
+              { x: .86, y: .84 },
+              { x: .12, y: .87 },
+            ],
+            expansionRatio: .1,
+          }, [bitmap]);
+        }
+        if (message.type !== 'edges-detected' && message.type !== 'edge-detection-failed') return;
+        const expected = board.map((point) => ({ x: point.x / 800, y: point.y / 600 }));
+        const detected = message.points || [];
+        const cornerError = detected.length === 4
+          ? Math.max(...detected.map((point, index) => Math.hypot(point.x - expected[index].x, point.y - expected[index].y)))
+          : Infinity;
+        const result = {
+          passed: message.type === 'edges-detected' && cornerError < .06,
+          type: message.type,
+          cornerError,
+          confidence: message.confidence || 0,
+          elapsedMs: Math.round(performance.now() - startedAt),
+          diagnostics: message.diagnostics || {},
+        };
+        output.textContent = JSON.stringify(result);
+        window.__edgeDetectionProbe = result;
+        worker.terminate();
+      });
+      worker.addEventListener('error', (error) => {
+        const result = { passed: false, error: error.message || 'worker error', elapsedMs: Math.round(performance.now() - startedAt) };
+        output.textContent = JSON.stringify(result);
+        window.__edgeDetectionProbe = result;
+      });
+      worker.postMessage({ type: 'config', profile: { name: 'balanced', maxEdge: 640, anchorInterval: 5 }, debugEnabled: false });
+    </script>
+  </body>
+</html>

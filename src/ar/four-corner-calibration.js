@@ -19,6 +19,48 @@ function solveLinearSystem(matrix, values) {
   return augmented.map((row) => row[size]);
 }
 
+function finiteHomography(matrix) {
+  return Array.isArray(matrix)
+    && matrix.length >= 9
+    && matrix.slice(0, 9).every((value) => Number.isFinite(Number(value)));
+}
+
+/** Map a board/world point through a row-major 3x3 homography. */
+export function projectPoint(matrix, point) {
+  if (!finiteHomography(matrix) || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+  const denominator = matrix[6] * point.x + matrix[7] * point.y + matrix[8];
+  if (!Number.isFinite(denominator) || Math.abs(denominator) < 1e-12) return null;
+  const x = (matrix[0] * point.x + matrix[1] * point.y + matrix[2]) / denominator;
+  const y = (matrix[3] * point.x + matrix[4] * point.y + matrix[5]) / denominator;
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+}
+
+/** Return the inverse of a row-major 3x3 homography, or null if singular. */
+export function invertHomography(matrix) {
+  if (!finiteHomography(matrix)) return null;
+  const [a, b, c, d, e, f, g, h, i] = matrix;
+  const determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) return null;
+  const inverse = [
+    (e * i - f * h) / determinant,
+    (c * h - b * i) / determinant,
+    (b * f - c * e) / determinant,
+    (f * g - d * i) / determinant,
+    (a * i - c * g) / determinant,
+    (c * d - a * f) / determinant,
+    (d * h - e * g) / determinant,
+    (b * g - a * h) / determinant,
+    (a * e - b * d) / determinant,
+  ];
+  return inverse.every(Number.isFinite) ? inverse : null;
+}
+
+/** Map a camera/display point back into board/world space. */
+export function unprojectPoint(matrix, point) {
+  const inverse = invertHomography(matrix);
+  return inverse ? projectPoint(inverse, point) : null;
+}
+
 export function computeHomography(source, destination) {
   if (source.length !== 4 || destination.length !== 4) return null;
   const matrix = [];

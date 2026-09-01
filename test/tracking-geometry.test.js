@@ -3,10 +3,22 @@ import assert from 'node:assert/strict';
 import {
   createCornerSmoother,
   displayPointToVideo,
+  expandCalibrationQuad,
   getCalibrationLoupePlacement,
   getLoupeSourceCrop,
   videoPointToDisplay,
 } from '../src/ar/tracking-geometry.js';
+
+test('calibration search quad expands about its centroid while preserving order', () => {
+  const quad = [{ x: 10, y: 20 }, { x: 110, y: 20 }, { x: 110, y: 70 }, { x: 10, y: 70 }];
+  const expanded = expandCalibrationQuad(quad, 0.1);
+  const expected = [{ x: 5, y: 17.5 }, { x: 115, y: 17.5 }, { x: 115, y: 72.5 }, { x: 5, y: 72.5 }];
+  expanded.forEach((point, index) => {
+    assert.ok(Math.abs(point.x - expected[index].x) < 1e-9);
+    assert.ok(Math.abs(point.y - expected[index].y) < 1e-9);
+  });
+  assert.deepEqual(expandCalibrationQuad([{ x: 1, y: 2 }]), []);
+});
 
 test('covered video coordinate conversions round-trip through a portrait preview', () => {
   const video = { width: 1920, height: 1080 };

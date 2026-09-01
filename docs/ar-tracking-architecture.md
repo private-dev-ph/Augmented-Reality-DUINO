@@ -67,6 +67,16 @@ The homography and calibration always use the physical board outline exactly. Th
 
 A careful calibration still matters. Keep the full outline visible, wait for camera focus, avoid bright glare, and place each handle on the real outer board edge rather than on a nearby shadow or connector.
 
+### Detect edge
+
+The AR menu has one `Calibration` action. It opens the same four-handle calibration screen whether the user wants to place the corners by hand or use the one-shot `Detect edge` action. When calibration begins, the app keeps a private copy of the original four handle positions and draws a second, faint dashed quadrilateral that is expanded by 10% around their centroid. That highlighted region is the only area given to the detector. Moving a handle changes the manual quad but does not move the search region; this keeps an accidental drag from silently changing what the detector is allowed to inspect.
+
+`cameraTracker.detectEdges()` captures one current video frame and sends it to the existing tracking worker. The worker converts the frame to grayscale, builds horizontal and vertical gradient images, chooses an adaptive threshold from the expanded region, and scores candidate lines along each side of the starting quadrilateral. The best four lines are intersected into a new ordered quadrilateral, then checked for convexity, useful area, sensible edge lengths, image bounds, displacement from the starting quad, and a minimum score margin. This is a bounded gradient-and-line search, not a second continuous tracker. It uses the phone's CPU and does not send the camera frame to a server.
+
+The result only moves the four handles. It never applies the calibration automatically. The UI shows a short confidence message and leaves the user in control of the final review, because a shadow, glare line, table edge, or connector can sometimes be stronger than the actual PCB outline. If a side is weak, ambiguous, out of bounds, or too far from the initial selection, the request fails safely and the manual points from before the request are restored. The user can tighten the handles, improve the lighting, try again, or place them manually. Cancel, camera stop, resize/orientation changes, and a new calibration invalidate older requests so a late worker response cannot overwrite newer work.
+
+The eye button beside `Apply` provides a temporary overlay preview while calibration is still open. It uses the same filtered, board-only source and projection bounds as the final overlay, but maps that source through a temporary homography from the physical board corners to the current handles. Dragging a handle or accepting a detected edge redraws the preview immediately. The preview uses near-full temporary visibility (95%) so the artwork is easy to compare with the camera image. It does not commit calibration, start tracking, or change the tracker reference; it is only a visual aid for checking the board boundary and internal artwork before applying. It stays below the handles and magnifier, accepts no pointer input, and is cleared when turned off, cancelled, or when a new calibration starts. This uses the same on-device canvas path on supported phones and on the static Cloudflare Pages deployment; no preview image is uploaded or processed remotely.
+
 ## The reference-view atlas
 
 A single front-facing photo is not enough for dependable recovery after a large perspective change. A feature's appearance can change substantially when the board is tilted. During calibration, AR-DUINO therefore creates a small set of synthetic views from the rectified board:
@@ -149,6 +159,22 @@ The source snapshot is filtered after background removal. Opaque pixels inside t
 
 The preferred renderer is WebGL. Two triangles carry homogeneous clip-space positions so the texture follows a true projective warp rather than ordinary affine interpolation. The physical board bounds land on the tracked physical corners, while the collar carries only the allowed nearby source pixels. WebGL passes raw texture coordinates and the fragment shader makes out-of-texture coordinates transparent; this prevents `CLAMP_TO_EDGE` sampling from smearing the source edge into a stretched strip. If WebGL cannot be created, a 10-by-7 Canvas2D triangle mesh follows the same physical/collar geometry and uses the same filtered source. WebGL accelerates overlay composition only; AKAZE, optical flow, and RANSAC remain CPU work inside WebAssembly.
 
+Sequence isolation uses separate theme roles for the active sequence component and pin, the selected net, connected components and nets, and muted unfocused nets. Light and dark themes provide their own values for these roles so the active inspection target and its connected context remain clear in either mode. Unrelated board artwork is left transparent in the isolated source. The normal viewer is rendered again immediately after the temporary AR source is created, so this presentation choice does not alter the flat viewer. It is still the same client-side canvas work on mobile and Cloudflare Pages, with no change to deployment or camera processing.
+
+### Transparency and full overlay visibility
+
+The transparency control is a user-facing camera/overlay balance from 0% to 100%. After a successful calibration the app selects 100%, so the board artwork is not additionally faded by the user's transparency setting. At 100%, a healthy `TRACKED` pose therefore uses the full overlay opacity available from the renderer; the camera is dimmed separately for contrast. Tracking safety still wins over that preference: `SUSPECT`, `RECOVERING`, and `LOST` states reduce or hide stale artwork so a frozen projection is not presented as current. The attached-artwork collar remains geometrically bounded at every setting, so increased visibility does not reintroduce stretched or detached artwork.
+
+## The PCB viewer remains the same state inside AR
+
+AR does not create a separate, reduced copy of the PCB viewer. The ordinary viewer state remains the source of the projected board image: visible layers, component/footprint/label switches, copper and outline settings, connectivity highlighting, the selected component, and the selected net all continue to use the same renderer and state object. When one of those settings changes, `refreshProjectedSource()` rebuilds the transparent source canvas from the updated viewer state and keeps the current camera homography.
+
+The projected canvas is interactive after a good pose. A tap is converted through the inverse homography into the board coordinate system, then uses the viewer's existing nearest-net and nearest-component hit tests. Tapping a trace or pad selects its net first; the normal selection panel and connectivity highlighting then show the same information used in the flat PCB view. This means net names, connected pads, component details, and related traces do not need a second AR-specific data model.
+
+Inspection sequences use the same shared state as well. The sequence editor, sequence preview, saved steps, probe pins, previous/next navigation, pass/flag actions, and the sequence view can be opened while the camera remains active. The sequence viewer remembers the last valid step for the current in-memory board/sequence session and resumes there, clamping the index safely if the sequence changed. While that viewer is open in AR, its camera/overlay transparency slider appears as a full-width top row in the sequence navigation and stays synchronized with the AR menu control. The camera overlay stays behind the workspace, and changes made by the viewer or sequence controls are reflected in the next projected source refresh. AR is an alternate presentation and input surface for the PCB viewer, not a separate application with a separate set of selections.
+
+Developer settings include `Isolate active sequence step in AR`. When it is on and a sequence is active, the projected source is rebuilt for the current step only. A component step with a defined probe pin follows only that pad's net, using the sequence item's `pinNet` as a safe fallback when the pad record has no net. It keeps the selected footprint, its pin highlight and label, and components directly attached to that one net; if the pin has no resolvable net, it safely keeps the selected component without expanding through the component's other pins. A net step keeps only the selected net and components directly attached to it, so traversal does not expand through every other net on those components or pull in large unrelated pours. Unrelated board content remains transparent. Outside an active sequence, normal viewer selection retains its broader connectivity exploration. Both normal sequence highlighting and isolated AR projection use the same scoped connectivity state. The ordinary flat PCB viewer is restored immediately after the temporary AR source is made, so isolation changes what is projected without changing the normal viewer. The choice is stored in local browser storage and defaults to off. With it off, AR uses the complete current viewer source exactly as before. It is a client-side presentation choice and does not send sequence or board data anywhere.
+
 ## How mobile processing is kept under control
 
 The camera request prefers the rear camera, 1280 by 720 video, and 30 frames per second. These are ideal constraints, so the browser may return the nearest supported mode. Continuous focus and continuous exposure are requested only when the camera reports those controls.
@@ -164,6 +190,8 @@ The visible preview keeps the camera's useful resolution. Tracking uses a smalle
 These rates are opportunities, not promised frames per second. A slower device naturally processes fewer frames because only one frame may be in flight. This backpressure prevents latency and memory use from growing without limit.
 
 `requestVideoFrameCallback()` aligns capture opportunities with real camera frames where it exists. A timer is the fallback. Each frame crosses into the worker as a transferable `ImageBitmap`, and `OffscreenCanvas` handles worker-side resizing and pixel access. The main thread stays available for touch input, menus, and rendering.
+
+After calibration, a two-finger pinch over the AR view applies a bounded 1x–4x visual zoom to the presentation. It uses the same CSS translate-and-scale transform for the visible camera video, projected overlay, and debug canvas, with translation clamped so the transformed layers do not reveal blank space. The raw camera/video frames supplied to the worker remain full-frame and untransformed; this preserves the whole-board context needed by AKAZE, optical flow, and recovery, and the pinch never changes the pixels used for tracking. AR taps invert the presentation transform before applying the existing homography mapping, so selection still lands on the board feature under the user's finger. Calibration, camera lifecycle changes, and resize/orientation changes reset the presentation transform. Browser page pinch/zoom is suppressed while the AR gesture is owned by the app, including Safari's touch behavior.
 
 The OpenCV loader is deliberately a classic worker wrapped in its own function scope. The generated OpenCV file is loaded with `importScripts()`. The wrapper prevents generic names inside the application worker and the generated runtime from being declared in the same global scope, which was the cause of the earlier `Identifier 'context' has already been declared` startup failure.
 
@@ -185,6 +213,8 @@ WebGL is preferred but optional because Canvas2D is available as the overlay fal
 Camera permission is always controlled by the browser and user. Camera access normally requires HTTPS; `localhost` is the development exception on the same computer. A phone opening a computer's plain `http://192.168...` address is not treated as localhost and will usually not get camera access.
 
 Compatibility means the required APIs are available, not that every device will give equal tracking quality. Camera optics, autofocus, thermal limits, browser memory, board texture, and lighting all matter. Test the actual device and board combinations intended for use.
+
+Visual pinch support depends on the browser's pointer/touch events and CSS transform support, which are available in the supported mobile browsers. It changes only the local presentation; it does not promise optical detail or increase the resolution of the camera frames processed by the tracker.
 
 ## Why Cloudflare Pages fits this application
 
@@ -254,14 +284,16 @@ That preview is the right place to check the real Pages headers, cache behavior,
 
 ## Debug points and local diagnostics
 
-The developer settings panel can show the current computer-vision evidence over the camera:
+The developer settings panel can show the current computer-vision evidence over the camera with `Show tracked feature points`:
 
 - cyan points are features detected in the current image;
 - amber rings are descriptor matches;
 - magenta crosses survived the optical-flow forward/backward check; and
 - green rings are inliers used by the accepted pose. The green quadrilateral is the accepted board boundary.
 
-The panel also reports state, processing method, feature and match counts, inliers, coverage, reprojection error, processing time, and rejection reasons. These values help separate common failure modes:
+The tracking diagnostic collector still records bounded, in-memory state, timing, match, coverage, reprojection, and rejection information for future troubleshooting. The former metrics and log controls are kept in the code but their settings-panel section is hidden and its buttons are disabled; runtime updates do not make that old UI appear. No diagnostic log or camera image is sent to a server. The visible feature-point switch is independent of that retained collection.
+
+When the diagnostic data is inspected during development, these values help separate common failure modes:
 
 | Symptom | Useful evidence |
 | --- | --- |
@@ -272,11 +304,9 @@ The panel also reports state, processing method, feature and match counts, inlie
 | Flow count falls during motion | Blur, occlusion, or movement too large between processed frames. |
 | Processing time grows | Device load or thermal throttling; try a lower profile. |
 
-**Download log** saves a bounded JSON session with at most 3,600 entries. Camera pixels, board-file contents, and feature-point arrays are removed. The file does include performance and rejection metrics plus contextual device data such as origin, profile, board name, user agent, hardware concurrency, device memory when exposed, screen size, pixel ratio, and camera settings. Review that metadata before sharing the file.
-
 ## Known limits
 
-No markerless browser tracker is impossible to lose. This implementation can still fail when:
+Markerless browser tracking can still be lost. This implementation can still fail when:
 
 - motion blur removes stable image detail;
 - hard reflections move across the solder mask or metal pads;
@@ -289,7 +319,7 @@ No markerless browser tracker is impossible to lose. This implementation can sti
 - fast motion combines rolling shutter with blur; or
 - a phone becomes hot and reduces sustained CPU speed.
 
-A learned live view helps only after that view was reached through a strong pose. It cannot repair a bad first calibration. When recovery repeatedly fails, return the board to a clearer view or run four-corner calibration again.
+A learned live view helps only after that view was reached through a strong pose. It cannot repair a bad first calibration. When recovery repeatedly fails, return the board to a clearer view or open `Calibration` again.
 
 ## A useful real-device test
 
@@ -306,7 +336,7 @@ For each target Android and iPhone class, test the same physical board with:
 7. diffuse, dim, directional, and reflective lighting; and
 8. at least 15 minutes of continuous use.
 
-Record how often the board stays tracked, the longest loss, the time to recover, visible corner error, processing latency, and the rejected-by reason. Compare runs from the downloaded diagnostics instead of judging only by how smooth one short session looked.
+Record how often the board stays tracked, the longest loss, the time to recover, visible corner error, processing latency, and the rejected-by reason. If the retained diagnostic tools are re-enabled in a future development build, compare those exported runs instead of judging only by how smooth one short session looked.
 
 Before a Pages preview or release, run:
 
@@ -323,10 +353,10 @@ Then confirm on the deployed preview that calibration is touchable, the worker r
 | File | Responsibility |
 | --- | --- |
 | `src/ar/camera.js` | Camera permission, rear-camera constraints, and supported focus/exposure controls. |
-| `src/ar/camera-tracker.js` | Browser capability checks, frame scheduling, backpressure, worker messages, and display/video coordinates. |
-| `src/ar/camera-tracker.worker.js` | OpenCV loading, calibration, atlas, AKAZE matching, optical flow, homography, validation, and recovery state. |
+| `src/ar/camera-tracker.js` | Browser capability checks, frame scheduling, backpressure, worker messages, display/video coordinates, and the one-shot `detectEdges()` request. |
+| `src/ar/camera-tracker.worker.js` | OpenCV loading, bounded gradient edge detection, calibration, atlas, AKAZE matching, optical flow, homography, validation, and recovery state. |
 | `src/ar/four-corner-calibration.js` | Four-handle interaction state and board-to-camera homography. |
-| `src/ar/tracking-geometry.js` | Cover-crop coordinate conversion, calibration-loupe crop and placement, and coherent corner smoothing. |
+| `src/ar/tracking-geometry.js` | Cover-crop coordinate conversion, calibration-loupe crop and placement, initial search-quad expansion, and coherent corner smoothing. |
 | `src/ar/projected-overlay.js` | Attached-artwork collar calculation, filtered board snapshot, and WebGL/Canvas2D projective rendering. |
 | `src/ar/tracking-diagnostics.js` | Point mapping, point stripping, and bounded diagnostic logs. |
 | `public/_headers` | Static Pages permissions and OpenCV cache rules. |

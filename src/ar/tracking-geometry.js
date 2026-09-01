@@ -38,6 +38,18 @@ export function videoPointToDisplay(point, videoSize, displaySize) {
   };
 }
 
+/** Expand an ordered quadrilateral around its centroid without changing its corner order. */
+export function expandCalibrationQuad(points, ratio = 0.1) {
+  if (!Array.isArray(points) || points.length !== 4
+    || points.some((point) => !Number.isFinite(point?.x) || !Number.isFinite(point?.y))) return [];
+  const safeRatio = Math.max(0, Math.min(0.2, Number(ratio) || 0));
+  const centroid = points.reduce((sum, point) => ({ x: sum.x + point.x / 4, y: sum.y + point.y / 4 }), { x: 0, y: 0 });
+  return points.map((point) => ({
+    x: centroid.x + (point.x - centroid.x) * (1 + safeRatio),
+    y: centroid.y + (point.y - centroid.y) * (1 + safeRatio),
+  }));
+}
+
 function positiveNumber(value, fallback) {
   return Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : fallback;
 }
