@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>OpenCV worker probe</title></head>
+  <body><pre id="result">loading</pre>
+    <script>
+      const opencvUrl = new URL('/vendor/opencv/opencv-4.13.0-arduino-r2.js', location.href).href;
+      const wasmUrl = new URL('/vendor/opencv/opencv-4.13.0-arduino-r2.wasm', location.href).href;
+      const source = `
+        const startedAt = performance.now();
+        self.Module = { locateFile: (path) => path.endsWith('.wasm') ? ${JSON.stringify(wasmUrl)} : path };
+        importScripts(${JSON.stringify(opencvUrl)});
+        Promise.resolve(cv).then((runtime) => {
+          const detector = new runtime.AKAZE();
+          detector.setThreshold(0.001);
+          detector.setNOctaves(4);
+          detector.setNOctaveLayers(4);
+          detector.setMaxPoints?.(300);
+          const matcher = typeof runtime.BFMatcher.create === 'function'
+            ? runtime.BFMatcher.create(runtime.NORM_HAMMING, false)
+            : new runtime.BFMatcher(runtime.NORM_HAMMING, false);
+          const image = new runtime.Mat(160, 220, runtime.CV_8UC1, new runtime.Scalar(0));
+          for (let y = 12; y < 148; y += 16) {
+            for (let x = 12; x < 208; x += 20) image.data[y * image.cols + x] = 255;
+          }
+          const keypoints = new runtime.KeyPointVector();
+          const descriptors = new runtime.Mat();
+          const mask = new runtime.Mat();
+          detector.detectAndCompute(image, mask, keypoints, descriptors);
+          const homographySource = runtime.matFromArray(4, 1, runtime.CV_32FC2, [0, 0, 100, 0, 100, 80, 0, 80]);
+          const homographyTarget = runtime.matFromArray(4, 1, runtime.CV_32FC2, [8, 6, 108, 12, 96, 88, 3, 75]);
+          const homography = runtime.findHomography(homographySource, homographyTarget);
+          postMessage({
+            ready: true,
+            startupMs: Math.round(performance.now() - startedAt),
+            keypoints: keypoints.size(),
+            descriptorColumns: descriptors.cols,
+            homographyRows: homography.rows,
+            AKAZE: typeof runtime.AKAZE,
+            akazeMethods: Object.getOwnPropertyNames(runtime.AKAZE.prototype),
+            BFMatcher: typeof runtime.BFMatcher,
+            bfMatcherMethods: Object.getOwnPropertyNames(runtime.BFMatcher.prototype),
+            descriptorMatcherCreate: typeof runtime.DescriptorMatcher.create,
+            findHomography: typeof runtime.findHomography,
+            calcOpticalFlowPyrLK: typeof runtime.calcOpticalFlowPyrLK,
+          });
+          homography.delete(); homographyTarget.delete(); homographySource.delete();
+          descriptors.delete(); keypoints.delete(); mask.delete(); image.delete();
+          matcher.delete(); detector.delete();
+        }).catch((error) => postMessage({ error: String(error), stack: error?.stack }));
+      `;
+      const worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
+      const result = document.querySelector('#result');
+      const timer = setTimeout(() => {
+        result.textContent = JSON.stringify({ error: 'timeout' });
+        document.title = 'failed';
+        worker.terminate();
+      }, 15000);
+      worker.addEventListener('message', (event) => {
+        clearTimeout(timer);
+        result.textContent = JSON.stringify(event.data);
+        document.title = event.data.error ? 'failed' : 'ready';
+        worker.terminate();
+      });
+      worker.addEventListener('error', (event) => {
+        clearTimeout(timer);
+        result.textContent = JSON.stringify({ error: event.message });
+        document.title = 'failed';
+        worker.terminate();
+      });
+    </script>
+  </body>
+</html>

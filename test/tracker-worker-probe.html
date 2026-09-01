@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>AR tracker worker probe</title></head>
+  <body><pre id="result">loading</pre>
+    <script type="module">
+      import { computeHomography } from '/src/ar/four-corner-calibration.js';
+
+      const result = document.querySelector('#result');
+      const worker = new Worker('/src/ar/camera-tracker.worker.js');
+      const waiters = [];
+      const messages = [];
+      worker.addEventListener('message', (event) => {
+        const message = event.data || {};
+        messages.push(message);
+        for (let index = waiters.length - 1; index >= 0; index -= 1) {
+          if (!waiters[index].predicate(message)) continue;
+          waiters[index].resolve(message);
+          waiters.splice(index, 1);
+        }
+      });
+
+      function waitFor(predicate, timeout = 25000) {
+        const existing = messages.find(predicate);
+        if (existing) return Promise.resolve(existing);
+        return new Promise((resolve, reject) => {
+          const waiter = { predicate, resolve };
+          waiters.push(waiter);
+          setTimeout(() => {
+            const index = waiters.indexOf(waiter);
+            if (index >= 0) waiters.splice(index, 1);
+            reject(new Error('Timed out waiting for the tracker worker.'));
+          }, timeout);
+        });
+      }
+
+      function waitForNext(predicate, timeout = 25000) {
+        return new Promise((resolve, reject) => {
+          const waiter = { predicate, resolve };
+          waiters.push(waiter);
+          setTimeout(() => {
+            const index = waiters.indexOf(waiter);
+            if (index >= 0) waiters.splice(index, 1);
+            reject(new Error('Timed out waiting for the next tracker response.'));
+          }, timeout);
+        });
+      }
+
+      function project(matrix, point) {
+        const denominator = matrix[6] * point.x + matrix[7] * point.y + matrix[8];
+        return {
+          x: (matrix[0] * point.x + matrix[1] * point.y + matrix[2]) / denominator,
+          y: (matrix[3] * point.x + matrix[4] * point.y + matrix[5]) / denominator,
+        };
+      }
+
+      function drawTriangle(context, image, source, destination) {
+        const [s0, s1, s2] = source;
+        const [d0, d1, d2] = destination;
+        const determinant = (s1.x - s0.x) * (s2.y - s0.y) - (s2.x - s0.x) * (s1.y - s0.y);
+        const a = ((d1.x - d0.x) * (s2.y - s0.y) - (d2.x - d0.x) * (s1.y - s0.y)) / determinant;
+        const c = ((s1.x - s0.x) * (d2.x - d0.x) - (s2.x - s0.x) * (d1.x - d0.x)) / determinant;
+        const b = ((d1.y - d0.y) * (s2.y - s0.y) - (d2.y - d0.y) * (s1.y - s0.y)) / determinant;
+        const d = ((s1.x - s0.x) * (d2.y - d0.y) - (s2.x - s0.x) * (d1.y - d0.y)) / determinant;
+        const e = d0.x - a * s0.x - c * s0.y;
+        const f = d0.y - b * s0.x - d * s0.y;
+        context.save();
+        context.beginPath();
+        context.moveTo(d0.x, d0.y);
+        context.lineTo(d1.x, d1.y);
+        context.lineTo(d2.x, d2.y);
+        context.closePath();
+        context.clip();
+        context.transform(a, b, c, d, e, f);
+        context.drawImage(image, 0, 0);
+        context.restore();
+      }
+
+      const board = document.createElement('canvas');
+      board.width = 600;
+      board.height = 400;
+      const boardContext = board.getContext('2d');
+      boardContext.fillStyle = '#164f3a';
+      boardContext.fillRect(0, 0, board.width, board.height);
+      boardContext.strokeStyle = '#e9e1b8';
+      boardContext.lineWidth = 5;
+      boardContext.strokeRect(7, 7, board.width - 14, board.height - 14);
+      boardContext.font = 'bold 28px sans-serif';
+      boardContext.fillStyle = '#f5f0d5';
+      boardContext.fillText('AR-DUINO 2560', 176, 48);
+      let seed = 92371;
+      const random = () => {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        return seed / 4294967296;
+      };
+      for (let index = 0; index < 95; index += 1) {
+        const x = 24 + random() * 552;
+        const y = 56 + random() * 315;
+        const radius = 3 + random() * 8;
+        boardContext.beginPath();
+        boardContext.arc(x, y, radius, 0, Math.PI * 2);
+        boardContext.fillStyle = index % 3 ? '#d9b65f' : '#e8e8dd';
+        boardContext.fill();
+        boardContext.strokeStyle = '#13231c';
+        boardContext.lineWidth = 2;
+        boardContext.stroke();
+        if (index % 4 === 0) {
+          boardContext.strokeStyle = index % 8 ? '#74d4ae' : '#f1d168';
+          boardContext.lineWidth = 2;
+          boardContext.beginPath();
+          boardContext.moveTo(x, y);
+          boardContext.lineTo(20 + random() * 560, 58 + random() * 310);
+          boardContext.stroke();
+        }
+      }
+      for (let index = 0; index < 14; index += 1) {
+        const x = 30 + (index % 7) * 80;
+        const y = 92 + Math.floor(index / 7) * 185;
+        boardContext.fillStyle = '#202523';
+        boardContext.fillRect(x, y, 48 + (index % 3) * 9, 30 + (index % 2) * 12);
+        boardContext.fillStyle = '#faf7df';
+        boardContext.font = 'bold 13px monospace';
+        boardContext.fillText(`U${index + 1}`, x + 7, y + 20);
+      }
+
+      const frame = document.createElement('canvas');
+      frame.width = 960;
+      frame.height = 540;
+      const frameContext = frame.getContext('2d');
+      const boardCorners = [{ x: 0, y: 0 }, { x: 600, y: 0 }, { x: 600, y: 400 }, { x: 0, y: 400 }];
+
+      function renderFrame(destination) {
+        frameContext.fillStyle = '#6f6d68';
+        frameContext.fillRect(0, 0, frame.width, frame.height);
+        const matrix = computeHomography(boardCorners, destination);
+        const columns = 20;
+        const rows = 14;
+        for (let row = 0; row < rows; row += 1) {
+          for (let column = 0; column < columns; column += 1) {
+            const x0 = column / columns * board.width;
+            const x1 = (column + 1) / columns * board.width;
+            const y0 = row / rows * board.height;
+            const y1 = (row + 1) / rows * board.height;
+            const source = [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
+            const target = source.map((point) => project(matrix, point));
+            drawTriangle(frameContext, board, [source[0], source[1], source[2]], [target[0], target[1], target[2]]);
+            drawTriangle(frameContext, board, [source[0], source[2], source[3]], [target[0], target[2], target[3]]);
+          }
+        }
+      }
+
+      async function sendFrame(destination) {
+        renderFrame(destination);
+        const bitmap = await createImageBitmap(frame);
+        const response = waitForNext((message) => message.type === 'frame');
+        worker.postMessage({ type: 'frame', bitmap }, [bitmap]);
+        return response;
+      }
+
+      async function sendBlankFrame() {
+        frameContext.fillStyle = '#6f6d68';
+        frameContext.fillRect(0, 0, frame.width, frame.height);
+        const bitmap = await createImageBitmap(frame);
+        const response = waitForNext((message) => message.type === 'frame');
+        worker.postMessage({ type: 'frame', bitmap }, [bitmap]);
+        return response;
+      }
+
+      const poses = [
+        { name: 'front', corners: [{ x: 180, y: 70 }, { x: 780, y: 70 }, { x: 780, y: 470 }, { x: 180, y: 470 }] },
+        { name: 'translate-xy', corners: [{ x: 215, y: 92 }, { x: 815, y: 92 }, { x: 815, y: 492 }, { x: 215, y: 492 }] },
+        { name: 'roll-12', corners: [{ x: 228, y: 12 }, { x: 815, y: 137 }, { x: 732, y: 528 }, { x: 145, y: 403 }] },
+        { name: 'scale-down', corners: [{ x: 250, y: 117 }, { x: 710, y: 117 }, { x: 710, y: 423 }, { x: 250, y: 423 }] },
+        { name: 'yaw-45', corners: [{ x: 115, y: 38 }, { x: 760, y: 132 }, { x: 760, y: 408 }, { x: 115, y: 502 }] },
+        { name: 'yaw-60', corners: [{ x: 135, y: 28 }, { x: 720, y: 181 }, { x: 720, y: 359 }, { x: 135, y: 512 }] },
+        { name: 'diagonal', corners: [{ x: 175, y: 52 }, { x: 790, y: 158 }, { x: 690, y: 430 }, { x: 92, y: 505 }] },
+      ];
+
+      try {
+        worker.postMessage({ type: 'config', profile: { name: 'balanced', maxEdge: 640, anchorInterval: 4 }, debugEnabled: true });
+        const ready = await waitFor((message) => message.type === 'state' && ['ready', 'error'].includes(message.state));
+        if (ready.state === 'error') throw new Error(ready.message);
+        renderFrame(poses[0].corners);
+        const calibrationBitmap = await createImageBitmap(frame);
+        worker.postMessage({
+          type: 'calibrate',
+          bitmap: calibrationBitmap,
+          boardAspect: 1.5,
+          points: poses[0].corners.map((point) => ({ x: point.x / frame.width, y: point.y / frame.height })),
+        }, [calibrationBitmap]);
+        const calibrated = await waitFor((message) => message.type === 'calibrated' || message.type === 'calibration-failed', 45000);
+        if (calibrated.type === 'calibration-failed') throw new Error(calibrated.message);
+        const measurements = [];
+        for (const pose of poses) {
+          let response = null;
+          for (let attempt = 0; attempt < 3 && !response?.tracking; attempt += 1) response = await sendFrame(pose.corners);
+          if (!response?.tracking) throw new Error(`${pose.name} did not relocalize.`);
+          const diagnosticPoints = Object.values(response.diagnostic?.points || {}).flat();
+          if (diagnosticPoints.some((point) => point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1)) {
+            throw new Error(`${pose.name} returned a debug point outside normalized video coordinates.`);
+          }
+          const expected = pose.corners.map((point) => ({ x: point.x / frame.width, y: point.y / frame.height }));
+          const error = Math.max(...response.tracking.points.map((point, index) => Math.hypot(point.x - expected[index].x, point.y - expected[index].y)));
+          measurements.push({
+            pose: pose.name,
+            method: response.tracking.method,
+            confidence: Number(response.tracking.confidence.toFixed(3)),
+            inliers: response.tracking.inliers,
+            processingMs: response.tracking.processingMs,
+            maximumNormalizedCornerError: Number(error.toFixed(4)),
+            diagnosticState: response.diagnostic?.state,
+          });
+        }
+        let lostResponse = null;
+        for (let attempt = 0; attempt < 8 && lostResponse?.diagnostic?.state !== 'LOST'; attempt += 1) {
+          lostResponse = await sendBlankFrame();
+          if (lostResponse?.diagnostic?.state !== 'LOST') await new Promise((resolve) => setTimeout(resolve, 180));
+        }
+        if (lostResponse?.diagnostic?.state !== 'LOST') throw new Error('Blank-frame sequence did not reach LOST for recovery testing.');
+        const recoveryPose = poses.find((pose) => pose.name === 'roll-12');
+        let recovered = null;
+        for (let attempt = 0; attempt < 4 && !recovered?.tracking; attempt += 1) recovered = await sendFrame(recoveryPose.corners);
+        if (!recovered?.tracking) {
+          throw new Error(`Forced recovery failed: ${JSON.stringify({ flow: recovered?.diagnostic?.flow, attempts: recovered?.diagnostic?.attempts })}`);
+        }
+        measurements.push({
+          pose: 'forced-recovery-roll-12',
+          method: recovered.tracking.method,
+          confidence: Number(recovered.tracking.confidence.toFixed(3)),
+          inliers: recovered.tracking.inliers,
+          processingMs: recovered.tracking.processingMs,
+          maximumNormalizedCornerError: Number(Math.max(...recovered.tracking.points.map((point, index) => {
+            const expected = recoveryPose.corners[index];
+            return Math.hypot(point.x - expected.x / frame.width, point.y - expected.y / frame.height);
+          })).toFixed(4)),
+          learnedView: recovered.diagnostic?.learnedView?.id || null,
+        });
+        const passed = measurements.every((measurement) => measurement.maximumNormalizedCornerError < 0.045);
+        result.textContent = JSON.stringify({ passed, featureCount: calibrated.featureCount, viewCount: calibrated.viewCount, measurements });
+        document.title = passed ? 'passed' : 'failed';
+      } catch (error) {
+        result.textContent = JSON.stringify({ error: error.message, recentMessages: messages.slice(-8) });
+        document.title = 'failed';
+      } finally {
+        worker.terminate();
+      }
+    </script>
+  </body>
+</html>

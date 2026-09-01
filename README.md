@@ -11,6 +11,27 @@ npm run dev
 
 The production bundle is generated with `npm run build`. `npm run check` validates module syntax and `npm test` runs the model/parser tests.
 
+Node 22.12 or newer is recommended (the repository includes `.node-version`).
+
+## Mobile AR tracking
+
+AR tracking is markerless and runs completely on the phone. Four-corner calibration rectifies the live board into a canonical reference, builds a 15-view synthetic angle/roll atlas, and uses OpenCV 4.13 AKAZE feature matching for global recovery. Pyramidal Lucas–Kanade optical flow supplies the faster frames between descriptor anchors. Trusted real camera angles are learned as a small, bounded set of on-device recovery views. Every pose must pass RANSAC inlier, board coverage, reprojection-error, convexity, bounds, and temporal checks before it is presented.
+
+See [How AR-DUINO tracks a PCB on mobile](docs/ar-tracking-architecture.md) for the full tracking pipeline, mobile compatibility, debugging guide, known limits, and Cloudflare Pages deployment model.
+
+The vision engine is a custom 3.4 MB single-threaded WebAssembly build in `public/vendor/opencv`. It is loaded inside a classic worker, allows only one frame in flight, and performs no server-side image processing. The overlay is presented at display refresh rate with a coherent pose filter and an exact WebGL homography; Canvas2D remains the rendering fallback. Suspect poses fade and lost poses are hidden instead of leaving a frozen overlay that looks live.
+
+For best results:
+
+1. Use diffuse lighting and avoid glare across the solder mask.
+2. Fill a useful portion of the camera view with the board and wait for focus.
+3. Place the four handles in top-left, top-right, bottom-right, bottom-left order.
+4. Calibrate while the complete physical board is visible.
+
+No markerless system can recover detail that is nearly edge-on, fully occluded, blurred, or visually repetitive. The angle atlas materially improves recovery through large perspective changes, but production acceptance still requires replay and live-device validation using the actual boards, lighting, and maximum intended angle.
+
+Developer settings include **Show tracked feature points**. Cyan dots are detected features, amber rings are descriptor matches, magenta crosses survived forward/backward optical flow, and green rings are the inliers used for the accepted board pose. The panel also shows live counts and rejection metrics. **Download log** exports a bounded JSON session containing those metrics, camera settings, and rejection reasons; it never includes camera frames or board-file contents.
+
 ## Architecture
 
 ```text
@@ -29,6 +50,9 @@ src/render/
   board-renderer.js        Canvas drawing and component hit testing
 src/ui/view.js             DOM updates for layers, warnings, and selection
 src/styles.css             Application styles
+src/ar/camera-tracker.js   Camera-frame scheduling and worker bridge
+src/ar/camera-tracker.worker.js  AKAZE atlas, LK flow, and pose validation
+src/ar/projected-overlay.js      WebGL homography renderer with 2D fallback
 test/board.test.js         Regression tests for normalization and ODB++ parsing
 ```
 

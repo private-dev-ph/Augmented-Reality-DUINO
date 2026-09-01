@@ -35,6 +35,25 @@ export function computeHomography(source, destination) {
   return solved ? [...solved, 1] : null;
 }
 
+export function isValidCalibrationQuad(points, { minimumArea = 400, minimumEdge = 10 } = {}) {
+  if (!Array.isArray(points) || points.length !== 4 || points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return false;
+  let direction = 0;
+  let twiceArea = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const first = points[index];
+    const second = points[(index + 1) % points.length];
+    const third = points[(index + 2) % points.length];
+    if (Math.hypot(second.x - first.x, second.y - first.y) < minimumEdge) return false;
+    const cross = (second.x - first.x) * (third.y - second.y) - (second.y - first.y) * (third.x - second.x);
+    if (Math.abs(cross) < 1e-6) return false;
+    const nextDirection = Math.sign(cross);
+    if (direction && nextDirection !== direction) return false;
+    direction = nextDirection;
+    twiceArea += first.x * second.y - second.x * first.y;
+  }
+  return Math.abs(twiceArea) / 2 >= minimumArea;
+}
+
 export function createFourCornerCalibration() {
   let points = [];
   let boardBounds = null;
@@ -63,12 +82,14 @@ export function createFourCornerCalibration() {
     },
     complete() {
       if (!boardBounds || points.length !== 4) return { error: 'Position all four corner handles before applying calibration.' };
+      if (!isValidCalibrationQuad(points)) return { error: 'The four corners must form one non-crossing board outline with useful area.' };
       homography = computeHomography(sourceCorners(), points);
       if (!homography) return { error: 'The selected corners could not form a calibration. Adjust the handles and try again.' };
       return { complete: true };
     },
     updateTrackingPoints(nextPoints) {
       if (!boardBounds || !Array.isArray(nextPoints) || nextPoints.length !== 4) return false;
+      if (!isValidCalibrationQuad(nextPoints, { minimumArea: 16, minimumEdge: 2 })) return false;
       const nextHomography = computeHomography(sourceCorners(), nextPoints);
       if (!nextHomography) return false;
       points = nextPoints.map((point) => ({ x: point.x, y: point.y }));

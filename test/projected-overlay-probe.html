@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Projected overlay probe</title>
+    <style>
+      html, body { margin: 0; background: #111; }
+      #overlay, #fallback { display: block; width: 200px; height: 150px; }
+    </style>
+  </head>
+  <body>
+    <canvas id="overlay"></canvas>
+    <canvas id="fallback"></canvas>
+    <output id="result">running</output>
+    <script type="module">
+      import { computeHomography } from '/src/ar/four-corner-calibration.js';
+      import {
+        attachedArtworkProjectionBounds,
+        createBoardOnlySnapshot,
+        createProjectedOverlay,
+      } from '/src/ar/projected-overlay.js';
+
+      const width = 200;
+      const height = 150;
+      const source = document.createElement('canvas');
+      source.width = width;
+      source.height = height;
+      const sourceContext = source.getContext('2d');
+      sourceContext.fillStyle = '#111111';
+      sourceContext.fillRect(0, 0, width, height);
+      const physicalBounds = { minX: 20, minY: 35, maxX: 180, maxY: 115 };
+      const projectionBounds = attachedArtworkProjectionBounds(physicalBounds);
+      const quadrants = [
+        [20, 35, 80, 40, '#ff0000'],
+        [100, 35, 80, 40, '#00ff00'],
+        [20, 75, 80, 40, '#0000ff'],
+        [100, 75, 80, 40, '#ffff00'],
+      ];
+      for (const [x, y, quadrantWidth, quadrantHeight, color] of quadrants) {
+        sourceContext.fillStyle = color;
+        sourceContext.fillRect(x, y, quadrantWidth, quadrantHeight);
+      }
+      sourceContext.fillStyle = '#ffffff';
+      sourceContext.fillRect(12, 70, 8, 10); // close board-attached protrusion
+      sourceContext.fillStyle = '#ff00ff';
+      sourceContext.fillRect(48, 140, 40, 8); // detached note/logo artwork
+      sourceContext.fillStyle = '#00ffff';
+      sourceContext.fillRect(5, 70, 5, 10); // beyond the allowed collar
+
+      const canvas = document.querySelector('#overlay');
+      const viewport = {
+        screen: ({ x, y }) => ({ x, y: height - y }),
+        screenSize: () => ({ w: width, h: height }),
+      };
+      const sourceCorners = [
+        { x: physicalBounds.minX, y: physicalBounds.maxY },
+        { x: physicalBounds.maxX, y: physicalBounds.maxY },
+        { x: physicalBounds.maxX, y: physicalBounds.minY },
+        { x: physicalBounds.minX, y: physicalBounds.minY },
+      ];
+      const destinationCorners = [
+        { x: 18, y: 12 },
+        { x: 184, y: 34 },
+        { x: 165, y: 142 },
+        { x: 38, y: 124 },
+      ];
+      const matrix = computeHomography(sourceCorners, destinationCorners);
+      const filteredSource = createBoardOnlySnapshot(source, '#111111', {
+        viewport,
+        physicalBounds,
+        projectionBounds,
+      });
+      const projector = createProjectedOverlay(canvas);
+      const rendered = projector.render({
+        boardCanvas: filteredSource,
+        viewport,
+        bounds: projectionBounds,
+        matrix,
+        opacity: 1,
+      });
+
+      const gl = canvas.getContext('webgl');
+      const project = ({ x, y }) => {
+        const denominator = matrix[6] * x + matrix[7] * y + matrix[8];
+        return {
+          x: (matrix[0] * x + matrix[1] * y + matrix[2]) / denominator,
+          y: (matrix[3] * x + matrix[4] * y + matrix[5]) / denominator,
+        };
+      };
+      const dpr = canvas.width / width;
+      const sample = (worldPoint) => {
+        const screenPoint = project(worldPoint);
+        const pixel = new Uint8Array(4);
+        const framebufferX = Math.round(screenPoint.x * dpr);
+        const framebufferY = canvas.height - Math.round(screenPoint.y * dpr) - 1;
+        gl.readPixels(framebufferX, framebufferY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        return Array.from(pixel);
+      };
+      const samples = {
+        topLeft: sample({ x: 60, y: 95 }),
+        topRight: sample({ x: 140, y: 95 }),
+        bottomLeft: sample({ x: 60, y: 55 }),
+        bottomRight: sample({ x: 140, y: 55 }),
+        closeProtrusion: sample({ x: 16, y: 75 }),
+        detachedArtwork: sample({ x: 68, y: 5 }),
+        beyondCollar: sample({ x: 5, y: 75 }),
+      };
+      const near = (value, expected) => Math.abs(value - expected) <= 2;
+      const matches = (value, expected) => value.every((channel, index) => near(channel, expected[index]));
+      const transparent = (value) => value[3] <= 2;
+      const filteredPixel = (x, y) => Array.from(filteredSource.getContext('2d').getImageData(x, y, 1, 1).data);
+      const filterPassed = transparent(filteredPixel(68, 144))
+        && transparent(filteredPixel(7, 75))
+        && filteredPixel(16, 75)[3] > 200;
+      const webGlPassed = rendered
+        && matches(samples.topLeft, [255, 0, 0, 255])
+        && matches(samples.topRight, [0, 255, 0, 255])
+        && matches(samples.bottomLeft, [0, 0, 255, 255])
+        && matches(samples.bottomRight, [255, 255, 0, 255])
+        && matches(samples.closeProtrusion, [255, 255, 255, 255])
+        && transparent(samples.detachedArtwork)
+        && transparent(samples.beyondCollar)
+        && filterPassed;
+
+      const fallbackCanvas = document.querySelector('#fallback');
+      const originalGetContext = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function getContext(type, ...args) {
+        if (type === 'webgl') return null;
+        return originalGetContext.call(this, type, ...args);
+      };
+      const fallbackProjector = createProjectedOverlay(fallbackCanvas);
+      HTMLCanvasElement.prototype.getContext = originalGetContext;
+      const fallbackRendered = fallbackProjector.render({
+        boardCanvas: filteredSource,
+        viewport,
+        bounds: projectionBounds,
+        matrix,
+        opacity: 1,
+      });
+      const fallbackContext = fallbackCanvas.getContext('2d');
+      const fallbackDpr = fallbackCanvas.width / width;
+      const sampleFallback = (worldPoint) => {
+        const screenPoint = project(worldPoint);
+        return Array.from(fallbackContext.getImageData(
+          Math.round(screenPoint.x * fallbackDpr),
+          Math.round(screenPoint.y * fallbackDpr),
+          1,
+          1,
+        ).data);
+      };
+      const fallbackSamples = {
+        topLeft: sampleFallback({ x: 60, y: 95 }),
+        topRight: sampleFallback({ x: 140, y: 95 }),
+        bottomLeft: sampleFallback({ x: 60, y: 55 }),
+        bottomRight: sampleFallback({ x: 140, y: 55 }),
+        closeProtrusion: sampleFallback({ x: 16, y: 75 }),
+        detachedArtwork: sampleFallback({ x: 68, y: 5 }),
+        beyondCollar: sampleFallback({ x: 5, y: 75 }),
+      };
+      const fallbackPassed = fallbackRendered
+        && matches(fallbackSamples.topLeft, [255, 0, 0, 255])
+        && matches(fallbackSamples.topRight, [0, 255, 0, 255])
+        && matches(fallbackSamples.bottomLeft, [0, 0, 255, 255])
+        && matches(fallbackSamples.bottomRight, [255, 255, 0, 255])
+        && matches(fallbackSamples.closeProtrusion, [255, 255, 255, 255])
+        && transparent(fallbackSamples.detachedArtwork)
+        && transparent(fallbackSamples.beyondCollar)
+        && filterPassed;
+      const result = {
+        passed: webGlPassed && fallbackPassed,
+        webGl: { passed: webGlPassed, samples },
+        canvas2d: { passed: fallbackPassed, samples: fallbackSamples },
+      };
+      document.querySelector('#result').textContent = JSON.stringify(result);
+      window.__overlayProbe = result;
+    </script>
+  </body>
+</html>

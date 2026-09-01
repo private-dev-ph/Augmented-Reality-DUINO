@@ -73,7 +73,9 @@ main { position: relative; min-width: 0; min-height: 0; overflow: hidden; backgr
 #boardWrap { position: relative; width: 100%; height: 100%; overflow: hidden; background: var(--canvas-bg); }
 #board { position: relative; z-index: 1; display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
 .ar-camera-video { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; object-fit: cover; background: #111; transition: filter .16s ease; }
-.ar-overlay-canvas { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; pointer-events: none; transition: filter .16s ease, opacity .16s ease; }
+.ar-overlay-canvas { --ar-user-opacity: .5; --ar-tracking-opacity: 0; --ar-tracking-freshness: 1; position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; opacity: calc(var(--ar-user-opacity) * var(--ar-tracking-opacity) * var(--ar-tracking-freshness)); pointer-events: none; transition: filter .16s ease, opacity .18s ease; }
+.ar-debug-canvas { position: absolute; inset: 0; z-index: 3; width: 100%; height: 100%; pointer-events: none; }
+.ar-debug-canvas[hidden] { display: none; }
 #boardWrap.camera-active #board { visibility: hidden; pointer-events: none; }
 .ar-calibration-overlay { position: absolute; inset: 0; z-index: 35; touch-action: none; cursor: crosshair; }
 .ar-calibration-overlay[hidden] { display: none; }
@@ -81,9 +83,18 @@ main { position: relative; min-width: 0; min-height: 0; overflow: hidden; backgr
 .ar-calibration-guide strong { display: block; margin-bottom: 2px; color: var(--accent-strong); }
 .ar-calibration-frame { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .ar-calibration-frame polygon { fill: color-mix(in srgb, var(--accent) 12%, transparent); stroke: var(--accent); stroke-width: 2; stroke-dasharray: 8 5; vector-effect: non-scaling-stroke; }
-.ar-calibration-handle { position: absolute; z-index: 1; display: grid; width: 30px; height: 30px; padding: 0; place-items: center; border: 2px solid var(--on-accent); border-radius: 50%; color: var(--on-accent); background: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 32%, transparent); transform: translate(-50%, -50%); touch-action: none; font-size: 12px; font-weight: 800; }
+.ar-calibration-loupe { position: absolute; z-index: 4; width: clamp(92px, 28vmin, 116px); aspect-ratio: 1; overflow: hidden; border: 2px solid var(--on-accent); border-radius: 50%; background: #101515; box-shadow: 0 4px 18px rgba(0, 0, 0, .42), 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent); pointer-events: none; }
+.ar-calibration-loupe[hidden] { display: none; }
+.ar-calibration-loupe canvas { display: block; width: 100%; height: 100%; }
+.ar-calibration-loupe-target { position: absolute; inset: 50% auto auto 50%; width: 18px; height: 18px; border: 1px solid rgba(255, 255, 255, .92); border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 0 1px rgba(0, 0, 0, .72); }
+.ar-calibration-loupe-target::before,
+.ar-calibration-loupe-target::after { content: ''; position: absolute; background: rgba(255, 255, 255, .92); box-shadow: 0 0 0 1px rgba(0, 0, 0, .58); }
+.ar-calibration-loupe-target::before { top: 8px; left: -5px; width: 28px; height: 1px; }
+.ar-calibration-loupe-target::after { top: -5px; left: 8px; width: 1px; height: 28px; }
+.ar-calibration-handle { position: absolute; z-index: 1; display: grid; width: 44px; height: 44px; padding: 0; place-items: center; border: 2px solid var(--on-accent); border-radius: 50%; color: var(--on-accent); background: color-mix(in srgb, var(--accent) 26%, transparent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); transform: translate(-50%, -50%); touch-action: none; font-size: 12px; font-weight: 800; }
+.ar-calibration-handle.is-dragging { background: color-mix(in srgb, var(--accent) 44%, transparent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 42%, transparent); }
 .ar-calibration-handle:hover,
-.ar-calibration-handle:focus-visible { color: var(--on-accent); border-color: var(--on-accent); background: var(--accent-strong); transform: translate(-50%, -50%) scale(1.08); }
+.ar-calibration-handle:focus-visible { color: var(--on-accent); border-color: var(--on-accent); background: color-mix(in srgb, var(--accent-strong) 56%, transparent); transform: translate(-50%, -50%) scale(1.08); }
 .ar-calibration-cancel { position: absolute; right: 12px; top: 12px; z-index: 1; padding: 5px 9px; font-size: 11px; }
 .ar-calibration-apply { position: absolute; right: 56px; bottom: 14px; z-index: 1; display: grid; width: 42px; height: 42px; padding: 0; place-items: center; border-radius: 13px; color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
 .ar-calibration-apply .menu-icon { width: 21px; height: 21px; stroke-width: 2.5; }
@@ -105,6 +116,25 @@ main { position: relative; min-width: 0; min-height: 0; overflow: hidden; backgr
   padding: 0;
   border-radius: 50%;
 }
+.dev-settings-button { position: absolute; top: 10px; left: 10px; z-index: 8; display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 7px; border-radius: 10px; }
+.dev-settings-button .settings-icon { display: block; flex: none; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.dev-settings-window { position: absolute; top: 50px; left: 10px; z-index: 9; display: grid; gap: 9px; width: min(310px, calc(100% - 20px)); max-height: calc(100% - 60px); overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--surface) 96%, transparent); box-shadow: var(--shadow-soft); backdrop-filter: blur(12px); font-size: 12px; }
+.dev-settings-window[hidden] { display: none !important; }
+.dev-settings-window label { display: grid; gap: 4px; color: var(--muted); font-weight: 700; }
+.dev-settings-window select { width: 100%; padding: 7px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--panel-2); }
+.dev-settings-window small { color: var(--muted); line-height: 1.35; }
+.dev-settings-window .dev-toggle { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.dev-toggle input { width: 17px; height: 17px; margin: 0; accent-color: var(--accent); }
+.dev-tracking-legend { display: flex; flex-wrap: wrap; gap: 5px 10px; color: var(--muted); font-size: 10px; font-weight: 700; }
+.dev-tracking-legend span::before { display: inline-block; width: 7px; height: 7px; margin-right: 4px; border: 2px solid currentColor; border-radius: 50%; content: ''; }
+.dev-tracking-legend .detected { color: #42e8ff; }
+.dev-tracking-legend .matched { color: #ffc247; }
+.dev-tracking-legend .flow { color: #ff63dc; }
+.dev-tracking-legend .inlier { color: #7cff6b; }
+.dev-tracking-metrics { min-height: 48px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--text-dim); background: color-mix(in srgb, var(--panel-2) 82%, transparent); font: 10px/1.45 ui-monospace, "Cascadia Mono", monospace; overflow-wrap: anywhere; }
+.dev-diagnostic-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.dev-diagnostic-actions button { min-width: 0; padding: 6px 7px; font-size: 11px; }
+.dev-diagnostic-actions button:disabled { cursor: not-allowed; opacity: .5; transform: none; }
 .help-icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .help-tooltip {
   position: absolute;

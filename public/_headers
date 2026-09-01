@@ -1,0 +1,5 @@
+/*
+  Permissions-Policy: camera=(self), microphone=()
+
+/vendor/opencv/*
+  Cache-Control: public, max-age=86400, must-revalidate

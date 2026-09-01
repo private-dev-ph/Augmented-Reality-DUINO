@@ -139,6 +139,34 @@ function validBounds(value) {
     && ['minX', 'minY', 'maxX', 'maxY'].every((key) => Number.isFinite(Number(value[key])));
 }
 
+function nonDegenerateBounds(value) {
+  return validBounds(value)
+    && Number(value.maxX) > Number(value.minX)
+    && Number(value.maxY) > Number(value.minY);
+}
+
+/**
+ * Returns the physical board rectangle used by calibration and tracking.
+ * A real outline is preferred because imported `bounds` may include labels or
+ * other drawing extents. The normalized board bounds remain the safe fallback.
+ */
+export function physicalBoardBounds(board) {
+  const outline = pointsOf(board?.outline || board?.boardOutline);
+  if (outline.length >= 3) {
+    const outlineBounds = box(outline);
+    if (nonDegenerateBounds(outlineBounds)) return outlineBounds;
+  }
+  if (nonDegenerateBounds(board?.bounds)) {
+    return {
+      minX: num(board.bounds.minX),
+      minY: num(board.bounds.minY),
+      maxX: num(board.bounds.maxX),
+      maxY: num(board.bounds.maxY),
+    };
+  }
+  return { minX: 0, minY: 0, maxX: 1, maxY: 1 };
+}
+
 export function normalizeBoard(raw) {
   const source = raw?.overlayData && typeof raw.overlayData === 'object' ? raw.overlayData : raw;
   if (!source || typeof source !== 'object' || Array.isArray(source)) {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { allFeatures, boardStats, boardWarning, normalizeBoard } from '../src/model/board.js';
+import { allFeatures, boardStats, boardWarning, normalizeBoard, physicalBoardBounds } from '../src/model/board.js';
 import { resolveConnectivity } from '../src/model/connectivity.js';
 import { normalizeInspectionSequence, sequenceItemKey, serializeInspectionSequence } from '../src/model/inspection-sequence.js';
 import { odbFeatureFile, odbUnitFactor } from '../src/parsers/odb.js';
@@ -22,6 +22,20 @@ test('normalizes overlayData and derives bounds from the board outline', () => {
   assert.deepEqual(board.bounds, { minX: 2, minY: 4, maxX: 8, maxY: 9 });
   assert.equal(allFeatures(board).length, 1);
   assert.equal(allFeatures(board)[0].source, 'layer');
+});
+
+test('uses a valid outline box for physical board bounds and falls back safely', () => {
+  const outlined = normalizeBoard({
+    bounds: { minX: -30, minY: -30, maxX: 30, maxY: 30 },
+    boardOutline: [{ x: 2, y: 4 }, { x: 8, y: 4 }, { x: 8, y: 9 }, { x: 2, y: 9 }],
+  });
+  assert.deepEqual(physicalBoardBounds(outlined), { minX: 2, minY: 4, maxX: 8, maxY: 9 });
+
+  const fallback = normalizeBoard({
+    bounds: { minX: 1, minY: 2, maxX: 11, maxY: 7 },
+    boardOutline: [{ x: 4, y: 4 }, { x: 4, y: 4 }],
+  });
+  assert.deepEqual(physicalBoardBounds(fallback), { minX: 1, minY: 2, maxX: 11, maxY: 7 });
 });
 
 test('reports board summary and missing connectivity notes', () => {

@@ -1,12 +1,19 @@
-import { layerOf, normalizeBoard, refOf } from './model/board.js';
+import { layerOf, normalizeBoard, physicalBoardBounds, refOf } from './model/board.js';
 import { normalizeInspectionSequence, sequenceItemKey, serializeInspectionSequence } from './model/inspection-sequence.js';
 import { resolveConnectivity } from './model/connectivity.js';
 import { loadBoardFile } from './parsers/file-loader.js';
 import { createCameraController } from './ar/camera.js';
-import { createCameraTracker } from './ar/camera-tracker.js';
+import { createCameraTracker, TRACKING_PROFILE_KEY } from './ar/camera-tracker.js';
 import { createFourCornerCalibration } from './ar/four-corner-calibration.js';
-import { createBoardOnlySnapshot, createProjectedOverlay } from './ar/projected-overlay.js';
-import { createCornerSmoother } from './ar/tracking-geometry.js';
+import { attachedArtworkProjectionBounds, createBoardOnlySnapshot, createProjectedOverlay } from './ar/projected-overlay.js';
+import { createTrackingDiagnosticLog, TRACKING_DEBUG_KEY } from './ar/tracking-diagnostics.js';
+import {
+  createCornerSmoother,
+  displayPointToVideo,
+  getCalibrationLoupePlacement,
+  getLoupeSourceCrop,
+  videoPointToDisplay,
+} from './ar/tracking-geometry.js';
 import { createBoardRenderer } from './render/board-renderer.js';
 import { createViewport } from './render/viewport.js';
 import { createAppState, setBoard } from './state.js';
@@ -35,11 +42,42 @@ const renderer = createBoardRenderer({
 });
 const fourCornerCalibration = createFourCornerCalibration();
 const projectedOverlay = createProjectedOverlay(view.arOverlayCanvas);
+const trackingDebugContext = view.arDebugCanvas.getContext('2d');
+const trackingDiagnosticLog = createTrackingDiagnosticLog();
 let arMenuOpen = false;
 let calibrationDragIndex = null;
+let calibrationPointerId = null;
+let calibrationPointerType = 'mouse';
+let calibrationLoupeFrameId = null;
+let calibrationLoupeVideoCallbackId = null;
+let calibrationVideoSize = null;
 let projectedSourceCanvas = null;
+let projectedSourceViewport = null;
+let physicalCalibrationBounds = null;
+let projectedOverlayBounds = null;
+let trackingTarget = null;
+let trackingPresentationFrameId = null;
+let trackingDebugFrameId = null;
+let latestTrackingDiagnostic = null;
+let trackingDebugEnabled = false;
 const trackedCornerSmoother = createCornerSmoother();
-const cameraTracker = createCameraTracker(view.arCameraVideo, { onState: handleCameraTrackerState, onTracking: applyTrackedCorners });
+const cameraTracker = createCameraTracker(view.arCameraVideo, {
+  onState: handleCameraTrackerState,
+  onTracking: applyTrackedCorners,
+  onDiagnostic: handleTrackingDiagnostic,
+});
+let savedTrackingProfile = 'balanced';
+try {
+  savedTrackingProfile = localStorage.getItem(TRACKING_PROFILE_KEY) || 'balanced';
+  trackingDebugEnabled = localStorage.getItem(TRACKING_DEBUG_KEY) === 'true';
+} catch {
+  // Storage can be unavailable in private Safari sessions.
+}
+if (![...view.devTrackingMethod.options].some((option) => option.value === savedTrackingProfile)) savedTrackingProfile = 'balanced';
+view.devTrackingMethod.value = savedTrackingProfile;
+view.devShowTrackingFeatures.checked = trackingDebugEnabled;
+view.arDebugCanvas.hidden = !trackingDebugEnabled;
+cameraTracker.setDebugEnabled(trackingDebugEnabled);
 const camera = createCameraController(view.arCameraVideo, ({ state: cameraState, message }) => {
   const active = cameraState === 'active';
   view.boardWrap.classList.toggle('camera-active', active);
@@ -53,8 +91,19 @@ const camera = createCameraController(view.arCameraVideo, ({ state: cameraState,
     cancelFourCornerCalibration();
     projectedOverlay.clear();
     projectedSourceCanvas = null;
+    projectedSourceViewport = null;
+    physicalCalibrationBounds = state.data ? physicalBoardBounds(state.data) : null;
+    projectedOverlayBounds = physicalCalibrationBounds
+      ? attachedArtworkProjectionBounds(physicalCalibrationBounds)
+      : null;
+    trackingTarget = null;
+    trackedCornerSmoother.reset();
+    setOverlayTrackingState('idle');
+    clearTrackingDebugOverlay({ discardDiagnostic: true });
+    view.devTrackingMetrics.textContent = 'Tracker inactive · diagnostics retained for download';
     cameraTracker.stop();
   } else {
+    view.arFourCornerButton.disabled = true;
     cameraTracker.start();
   }
   if (message) setStatus(view, message);
@@ -124,14 +173,238 @@ function setArMenuOpen(open) {
   view.arMenuButton.title = open ? 'Close AR controls' : 'Open AR controls';
 }
 
+function captureSourceViewport() {
+  const { w, h } = viewport.screenSize();
+  const center = { ...state.viewport.center };
+  const { offsetX, offsetY, scale } = state.viewport;
+  return {
+    screenSize: () => ({ w, h }),
+    screen: (point) => ({
+      x: w / 2 + offsetX + (point.x - center.x) * scale,
+      y: h / 2 + offsetY - (point.y - center.y) * scale,
+    }),
+  };
+}
+
 function updateArTransparency(value) {
-  const percentage = Math.max(0, Math.min(100, Number(value) || 50));
+  const numericValue = Number(value);
+  const percentage = Math.max(0, Math.min(100, Number.isFinite(numericValue) ? numericValue : 50));
   const balance = (percentage - 50) / 50;
   view.arTransparencyRange.value = String(percentage);
   view.arTransparencyValue.textContent = `${percentage}%`;
   view.arCameraVideo.style.filter = `brightness(${(1 - balance * 0.35).toFixed(2)})`;
   view.arOverlayCanvas.style.filter = `brightness(${(1 + balance * 0.35).toFixed(2)})`;
-  view.arOverlayCanvas.style.opacity = (percentage / 100).toFixed(2);
+  view.arOverlayCanvas.style.setProperty('--ar-user-opacity', (percentage / 100).toFixed(2));
+}
+
+function setOverlayTrackingState(state) {
+  const opacities = {
+    idle: 0,
+    calibrating: 0.65,
+    tracked: 1,
+    suspect: 0.55,
+    recovering: 0.2,
+    lost: 0,
+  };
+  const normalized = Object.hasOwn(opacities, state) ? state : 'idle';
+  view.arOverlayCanvas.dataset.trackingState = normalized;
+  view.arOverlayCanvas.style.setProperty('--ar-tracking-opacity', String(opacities[normalized]));
+  if (normalized === 'lost' || normalized === 'idle') {
+    view.arOverlayCanvas.style.setProperty('--ar-tracking-freshness', '0');
+  }
+}
+
+function clearTrackingDebugOverlay({ discardDiagnostic = false } = {}) {
+  if (trackingDebugFrameId != null) cancelAnimationFrame(trackingDebugFrameId);
+  trackingDebugFrameId = null;
+  if (discardDiagnostic) latestTrackingDiagnostic = null;
+  if (!trackingDebugContext) return;
+  trackingDebugContext.setTransform(1, 0, 0, 1, 0, 0);
+  trackingDebugContext.clearRect(0, 0, view.arDebugCanvas.width, view.arDebugCanvas.height);
+}
+
+function prepareTrackingDebugCanvas() {
+  const rect = view.boardWrap.getBoundingClientRect();
+  const pixelRatio = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  const width = Math.max(1, Math.round(rect.width * pixelRatio));
+  const height = Math.max(1, Math.round(rect.height * pixelRatio));
+  if (view.arDebugCanvas.width !== width || view.arDebugCanvas.height !== height) {
+    view.arDebugCanvas.width = width;
+    view.arDebugCanvas.height = height;
+  }
+  trackingDebugContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  trackingDebugContext.clearRect(0, 0, rect.width, rect.height);
+  return rect;
+}
+
+function drawDebugPoints(points, { color, radius, fill = false, cross = false, alpha = 1 }) {
+  if (!points?.length) return;
+  trackingDebugContext.save();
+  trackingDebugContext.globalAlpha = alpha;
+  trackingDebugContext.strokeStyle = color;
+  trackingDebugContext.fillStyle = color;
+  trackingDebugContext.lineWidth = 1.5;
+  for (const point of points) {
+    if (cross) {
+      trackingDebugContext.beginPath();
+      trackingDebugContext.moveTo(point.x - radius, point.y);
+      trackingDebugContext.lineTo(point.x + radius, point.y);
+      trackingDebugContext.moveTo(point.x, point.y - radius);
+      trackingDebugContext.lineTo(point.x, point.y + radius);
+      trackingDebugContext.stroke();
+      continue;
+    }
+    trackingDebugContext.beginPath();
+    trackingDebugContext.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    if (fill) trackingDebugContext.fill();
+    else trackingDebugContext.stroke();
+  }
+  trackingDebugContext.restore();
+}
+
+function drawTrackingDebugOverlay() {
+  trackingDebugFrameId = null;
+  if (!trackingDebugEnabled || !camera.active || !latestTrackingDiagnostic || !trackingDebugContext) {
+    clearTrackingDebugOverlay();
+    return;
+  }
+  const rect = prepareTrackingDebugCanvas();
+  const points = latestTrackingDiagnostic.points || {};
+  drawDebugPoints(points.detected, { color: '#42e8ff', radius: 1.8, fill: true, alpha: 0.62 });
+  drawDebugPoints(points.matched, { color: '#ffc247', radius: 3, alpha: 0.9 });
+  drawDebugPoints(points.flow, { color: '#ff63dc', radius: 3.2, cross: true, alpha: 0.9 });
+  drawDebugPoints(points.inliers, { color: '#7cff6b', radius: 4.2, alpha: 1 });
+  if (points.corners?.length === 4) {
+    trackingDebugContext.save();
+    trackingDebugContext.strokeStyle = '#7cff6b';
+    trackingDebugContext.lineWidth = 2;
+    trackingDebugContext.setLineDash([7, 5]);
+    trackingDebugContext.beginPath();
+    trackingDebugContext.moveTo(points.corners[0].x, points.corners[0].y);
+    for (const point of points.corners.slice(1)) trackingDebugContext.lineTo(point.x, point.y);
+    trackingDebugContext.closePath();
+    trackingDebugContext.stroke();
+    trackingDebugContext.restore();
+  }
+  trackingDebugContext.save();
+  trackingDebugContext.fillStyle = 'rgba(0, 0, 0, .72)';
+  trackingDebugContext.fillRect(8, Math.max(8, rect.height - 30), Math.min(330, rect.width - 16), 22);
+  trackingDebugContext.fillStyle = '#f4f7f2';
+  trackingDebugContext.font = '11px ui-monospace, monospace';
+  trackingDebugContext.fillText(view.devTrackingMetrics.textContent.slice(0, 52), 14, Math.max(23, rect.height - 15));
+  trackingDebugContext.restore();
+}
+
+function scheduleTrackingDebugOverlay() {
+  if (!trackingDebugEnabled || trackingDebugFrameId != null) return;
+  trackingDebugFrameId = requestAnimationFrame(drawTrackingDebugOverlay);
+}
+
+function metric(value, digits = 0) {
+  return Number.isFinite(value) ? Number(value).toFixed(digits) : '—';
+}
+
+function formatTrackingDiagnostic(diagnostic) {
+  const winner = diagnostic.winner;
+  const flow = diagnostic.flow || {};
+  const bestRejected = [...(diagnostic.attempts || [])]
+    .sort((left, right) => (right.pairs || 0) - (left.pairs || 0))[0];
+  const result = winner
+    ? `${winner.method}${winner.viewId ? `/${winner.viewId}` : ''} · ${winner.inliers}/${winner.matches} inliers · grid ${winner.coverage}/12 · err ${metric(winner.reprojectionError, 1)} px`
+    : `no pose · ${bestRejected?.rejectedBy || diagnostic.featureRejectedBy || flow.rejectedBy || 'waiting for reference'}`;
+  const learnedViews = diagnostic.learnedView?.liveViewCount ?? diagnostic.liveViewCount ?? 0;
+  return `${diagnostic.state || 'READY'} · ${result}\nfeatures ${diagnostic.featureCount ?? '—'} · best match ${diagnostic.bestFeatureMatches ?? '—'} · LK ${flow.validCount ?? 0}/${flow.seedCount ?? 0} · learned ${learnedViews}/6 · ${metric(diagnostic.processingMs, 1)} ms`;
+}
+
+function handleTrackingDiagnostic(diagnostic) {
+  latestTrackingDiagnostic = diagnostic;
+  trackingDiagnosticLog.record('frame', diagnostic);
+  view.devDownloadTrackingLog.disabled = trackingDiagnosticLog.size === 0;
+  view.devTrackingMetrics.textContent = formatTrackingDiagnostic(diagnostic);
+  scheduleTrackingDebugOverlay();
+}
+
+function recordTrackerEvent(message) {
+  trackingDiagnosticLog.record('tracker-state', {
+    type: message.type,
+    state: message.state || null,
+    message: message.message || null,
+    relocalized: Boolean(message.relocalized),
+    featureCount: message.featureCount,
+    viewCount: message.viewCount,
+  });
+  view.devDownloadTrackingLog.disabled = false;
+}
+
+function selectedCameraSettings() {
+  const settings = view.arCameraVideo.srcObject?.getVideoTracks?.()[0]?.getSettings?.() || {};
+  const allowed = {};
+  for (const key of ['width', 'height', 'frameRate', 'facingMode', 'resizeMode']) {
+    if (['string', 'number', 'boolean'].includes(typeof settings[key])) allowed[key] = settings[key];
+  }
+  return allowed;
+}
+
+function downloadTrackingDiagnostics() {
+  const payload = trackingDiagnosticLog.snapshot({
+    appOrigin: window.location.origin,
+    trackingProfile: view.devTrackingMethod.value,
+    debugFeaturesVisible: trackingDebugEnabled,
+    boardName: state.data?.name || null,
+    userAgent: navigator.userAgent,
+    hardwareConcurrency: navigator.hardwareConcurrency || null,
+    deviceMemoryGiB: navigator.deviceMemory || null,
+    screen: {
+      width: window.screen?.width || null,
+      height: window.screen?.height || null,
+      devicePixelRatio: window.devicePixelRatio || 1,
+    },
+    camera: selectedCameraSettings(),
+  });
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `ar-duino-tracking-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  setStatus(view, `Downloaded ${trackingDiagnosticLog.size} local tracking diagnostic entries.`);
+}
+
+function updateTrackingDebugEnabled(enabled) {
+  trackingDebugEnabled = Boolean(enabled);
+  view.devShowTrackingFeatures.checked = trackingDebugEnabled;
+  view.arDebugCanvas.hidden = !trackingDebugEnabled;
+  cameraTracker.setDebugEnabled(trackingDebugEnabled);
+  if (trackingDebugEnabled) scheduleTrackingDebugOverlay();
+  else clearTrackingDebugOverlay();
+  trackingDiagnosticLog.record('debug-visibility', { enabled: trackingDebugEnabled });
+  view.devDownloadTrackingLog.disabled = false;
+}
+
+function presentTrackedOverlay(timestamp) {
+  trackingPresentationFrameId = null;
+  if (!camera.active || !projectedSourceCanvas || !projectedSourceViewport || !trackingTarget) return;
+  const targetAge = Math.max(0, timestamp - trackingTarget.timestamp);
+  const freshness = targetAge <= 450 ? 1 : Math.max(0, 1 - (targetAge - 450) / 650);
+  view.arOverlayCanvas.style.setProperty('--ar-tracking-freshness', freshness.toFixed(3));
+  const points = trackedCornerSmoother.filter(trackingTarget.points, timestamp, trackingTarget.confidence);
+  if (fourCornerCalibration.updateTrackingPoints(points)) {
+    projectedOverlay.render({
+      boardCanvas: projectedSourceCanvas,
+      viewport: projectedSourceViewport,
+      bounds: projectedOverlayBounds || physicalCalibrationBounds || state.data.bounds,
+      matrix: fourCornerCalibration.homography,
+      margin: 0,
+    });
+  }
+  if (freshness > 0 || targetAge < 1_600) trackingPresentationFrameId = requestAnimationFrame(presentTrackedOverlay);
+}
+
+function scheduleTrackedOverlayPresentation() {
+  if (trackingPresentationFrameId == null) trackingPresentationFrameId = requestAnimationFrame(presentTrackedOverlay);
 }
 
 function renderFourCornerCalibration() {
@@ -143,28 +416,131 @@ function renderFourCornerCalibration() {
   const instruction = document.createElement('span');
   instruction.textContent = 'Drag each numbered handle onto the matching physical board corner, then apply.';
   view.arCalibrationGuide.append(title, instruction);
-  for (const element of view.arCalibrationOverlay.querySelectorAll('.ar-calibration-frame, .ar-calibration-handle')) element.remove();
   const frame = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   frame.setAttribute('class', 'ar-calibration-frame');
   frame.setAttribute('aria-hidden', 'true');
-  const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+  let polygon = view.arCalibrationOverlay.querySelector('.ar-calibration-frame polygon');
+  if (!polygon) polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
   polygon.setAttribute('points', points.map((point) => `${point.x},${point.y}`).join(' '));
   frame.append(polygon);
-  view.arCalibrationOverlay.append(frame);
+  const oldFrame = view.arCalibrationOverlay.querySelector('.ar-calibration-frame');
+  if (oldFrame) oldFrame.replaceWith(frame);
+  else view.arCalibrationOverlay.append(frame);
+  const handles = [...view.arCalibrationOverlay.querySelectorAll('.ar-calibration-handle')];
   points.forEach((point, index) => {
-    const handle = document.createElement('button');
-    handle.type = 'button';
-    handle.className = 'ar-calibration-handle';
+    const handle = handles[index] || document.createElement('button');
+    if (!handles[index]) {
+      handle.type = 'button';
+      handle.className = 'ar-calibration-handle';
+      view.arCalibrationOverlay.append(handle);
+    }
     handle.dataset.cornerIndex = String(index);
     handle.setAttribute('aria-label', `Move ${['top-left', 'top-right', 'bottom-right', 'bottom-left'][index]} board corner`);
     handle.textContent = String(index + 1);
+    handle.classList.toggle('is-dragging', index === calibrationDragIndex);
     handle.style.left = `${point.x}px`;
     handle.style.top = `${point.y}px`;
-    view.arCalibrationOverlay.append(handle);
   });
 }
 
+function hideCalibrationLoupe() {
+  if (calibrationLoupeFrameId != null) cancelAnimationFrame(calibrationLoupeFrameId);
+  calibrationLoupeFrameId = null;
+  if (calibrationLoupeVideoCallbackId != null && typeof view.arCameraVideo.cancelVideoFrameCallback === 'function') {
+    view.arCameraVideo.cancelVideoFrameCallback(calibrationLoupeVideoCallbackId);
+  }
+  calibrationLoupeVideoCallbackId = null;
+  view.arCalibrationLoupe.hidden = true;
+}
+
+function drawCalibrationLoupe() {
+  calibrationLoupeFrameId = null;
+  calibrationLoupeVideoCallbackId = null;
+  if (calibrationPointerId == null || calibrationDragIndex == null || !fourCornerCalibration.active || !calibrationVideoSize) return;
+  const overlayRect = view.arCalibrationOverlay.getBoundingClientRect();
+  const point = fourCornerCalibration.points[calibrationDragIndex];
+  if (!point || !overlayRect.width || !overlayRect.height) return;
+  view.arCalibrationLoupe.hidden = false;
+  const lensRect = view.arCalibrationLoupe.getBoundingClientRect();
+  const lensWidth = lensRect.width || 100;
+  const lensHeight = lensRect.height || lensWidth;
+  const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+  const canvas = view.arCalibrationLoupeCanvas;
+  const pixelWidth = Math.max(1, Math.round(lensWidth * dpr));
+  const pixelHeight = Math.max(1, Math.round(lensHeight * dpr));
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+  const context = canvas.getContext('2d');
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = '#101515';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  const crop = getLoupeSourceCrop(
+    point,
+    calibrationVideoSize,
+    { width: overlayRect.width, height: overlayRect.height },
+    { zoom: 3, lensSize: { width: lensWidth, height: lensHeight } },
+  );
+  if (crop.source.width > 0 && crop.source.height > 0) {
+    context.imageSmoothingEnabled = true;
+    context.drawImage(
+      view.arCameraVideo,
+      crop.source.x,
+      crop.source.y,
+      crop.source.width,
+      crop.source.height,
+      crop.destination.x * dpr,
+      crop.destination.y * dpr,
+      crop.destination.width * dpr,
+      crop.destination.height * dpr,
+    );
+  }
+  const placement = getCalibrationLoupePlacement(
+    point,
+    { width: overlayRect.width, height: overlayRect.height },
+    { width: lensWidth, height: lensHeight },
+    calibrationPointerType,
+  );
+  view.arCalibrationLoupe.style.left = `${placement.left}px`;
+  view.arCalibrationLoupe.style.top = `${placement.top}px`;
+}
+
+function scheduleCalibrationLoupe() {
+  if (calibrationPointerId == null || calibrationDragIndex == null) return;
+  if (typeof view.arCameraVideo.requestVideoFrameCallback === 'function') {
+    if (calibrationLoupeVideoCallbackId != null) return;
+    calibrationLoupeVideoCallbackId = view.arCameraVideo.requestVideoFrameCallback(() => {
+      drawCalibrationLoupe();
+      scheduleCalibrationLoupe();
+    });
+    return;
+  }
+  if (calibrationLoupeFrameId == null) {
+    calibrationLoupeFrameId = requestAnimationFrame(() => {
+      drawCalibrationLoupe();
+      scheduleCalibrationLoupe();
+    });
+  }
+}
+
+function endCalibrationHandleDrag(event, { commit = false } = {}) {
+  if (calibrationPointerId == null || (event && event.pointerId !== calibrationPointerId)) return;
+  const pointerId = calibrationPointerId;
+  if (commit && event) moveCalibrationHandle(event);
+  calibrationPointerId = null;
+  calibrationDragIndex = null;
+  hideCalibrationLoupe();
+  renderFourCornerCalibration();
+  if (view.arCalibrationOverlay.hasPointerCapture?.(pointerId)) {
+    try { view.arCalibrationOverlay.releasePointerCapture(pointerId); } catch { /* capture may already be gone */ }
+  }
+}
+
 function cancelFourCornerCalibration() {
+  calibrationVideoSize = null;
+  endCalibrationHandleDrag(null);
+  hideCalibrationLoupe();
   if (!fourCornerCalibration.active && !fourCornerCalibration.homography) return;
   calibrationDragIndex = null;
   fourCornerCalibration.cancel();
@@ -177,10 +553,24 @@ function beginFourCornerCalibration() {
     setStatus(view, 'Open the camera before starting four-corner calibration.');
     return;
   }
-  if (!state.data?.bounds) {
+  if (!state.data?.bounds || !physicalCalibrationBounds) {
     setStatus(view, 'Load a board before starting four-corner calibration.');
     return;
   }
+  if (!cameraTracker.ready) {
+    setStatus(view, 'The on-device vision engine is still loading. Try calibration again in a moment.');
+    return;
+  }
+  cameraTracker.reset();
+  endCalibrationHandleDrag(null);
+  hideCalibrationLoupe();
+  clearTrackingDebugOverlay({ discardDiagnostic: true });
+  trackingTarget = null;
+  trackedCornerSmoother.reset();
+  projectedOverlay.clear();
+  projectedSourceCanvas = null;
+  projectedSourceViewport = null;
+  setOverlayTrackingState('idle');
   setArMenuOpen(false);
   updateArTransparency(50);
   view.arCalibrationOverlay.hidden = false;
@@ -189,45 +579,58 @@ function beginFourCornerCalibration() {
   const frameHeight = Math.min(rect.height - 144, frameWidth * 0.52);
   const startX = (rect.width - frameWidth) / 2;
   const startY = (rect.height - frameHeight) / 2;
-  fourCornerCalibration.begin(state.data.bounds, [
+  fourCornerCalibration.begin(physicalCalibrationBounds, [
     { x: startX, y: startY },
     { x: startX + frameWidth, y: startY },
     { x: startX + frameWidth, y: startY + frameHeight },
     { x: startX, y: startY + frameHeight },
   ]);
+  calibrationVideoSize = {
+    width: view.arCameraVideo.videoWidth || 1,
+    height: view.arCameraVideo.videoHeight || 1,
+  };
   renderFourCornerCalibration();
   setStatus(view, 'Four-corner calibration: adjust the board frame, then apply it.');
 }
 
 function moveCalibrationHandle(event) {
-  if (!fourCornerCalibration.active || calibrationDragIndex == null) return;
+  if (!fourCornerCalibration.active || calibrationDragIndex == null || calibrationPointerId == null) return;
+  if (event.pointerId !== calibrationPointerId) return;
   const rect = view.arCalibrationOverlay.getBoundingClientRect();
   fourCornerCalibration.setPoint(calibrationDragIndex, {
     x: Math.max(0, Math.min(rect.width, event.clientX - rect.left)),
     y: Math.max(0, Math.min(rect.height, event.clientY - rect.top)),
   });
   renderFourCornerCalibration();
+  scheduleCalibrationLoupe();
 }
 
 function startCalibrationHandleDrag(event) {
+  if (calibrationPointerId != null) return;
   const handle = event.target.closest('.ar-calibration-handle');
   if (!handle) return;
   const index = Number(handle.dataset.cornerIndex);
   if (!Number.isInteger(index)) return;
+  calibrationPointerId = event.pointerId;
+  calibrationPointerType = event.pointerType || 'mouse';
   calibrationDragIndex = index;
-  view.arCalibrationOverlay.setPointerCapture(event.pointerId);
+  try { view.arCalibrationOverlay.setPointerCapture(event.pointerId); } catch { /* capture can fail for synthetic events */ }
   event.preventDefault();
   moveCalibrationHandle(event);
+  scheduleCalibrationLoupe();
 }
 
 function stopCalibrationHandleDrag(event) {
-  if (calibrationDragIndex == null) return;
-  moveCalibrationHandle(event);
-  calibrationDragIndex = null;
-  if (view.arCalibrationOverlay.hasPointerCapture(event.pointerId)) view.arCalibrationOverlay.releasePointerCapture(event.pointerId);
+  endCalibrationHandleDrag(event, { commit: event.type === 'pointerup' });
 }
 
 function applyFourCornerCalibration() {
+  if (!cameraTracker.ready) {
+    setStatus(view, 'The on-device vision engine is still loading. Keep the corners in place and try Apply again.');
+    return;
+  }
+  endCalibrationHandleDrag(null);
+  hideCalibrationLoupe();
   const result = fourCornerCalibration.complete();
   if (result.error) {
     setStatus(view, result.error);
@@ -239,46 +642,97 @@ function applyFourCornerCalibration() {
   projectedSourceCanvas = createBoardOnlySnapshot(
     view.canvas,
     getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg'),
+    {
+      viewport,
+      physicalBounds: physicalCalibrationBounds,
+      projectionBounds: projectedOverlayBounds,
+    },
   );
+  projectedSourceViewport = captureSourceViewport();
   state.view.grid = gridVisible;
   renderer.render();
   const overlayRendered = projectedOverlay.render({
     boardCanvas: projectedSourceCanvas,
-    viewport,
-    bounds: state.data.bounds,
+    viewport: projectedSourceViewport,
+    bounds: projectedOverlayBounds || physicalCalibrationBounds || state.data.bounds,
     matrix: fourCornerCalibration.homography,
+    margin: 0,
   });
   updateArTransparency(100);
   trackedCornerSmoother.reset();
-  cameraTracker.calibrate(fourCornerCalibration.points, view.arCameraVideo.getBoundingClientRect());
+  trackingTarget = null;
+  setOverlayTrackingState('calibrating');
+  const boardWidth = Math.abs(physicalCalibrationBounds.maxX - physicalCalibrationBounds.minX);
+  const boardHeight = Math.abs(physicalCalibrationBounds.maxY - physicalCalibrationBounds.minY);
+  cameraTracker.calibrate(
+    fourCornerCalibration.points,
+    view.arCameraVideo.getBoundingClientRect(),
+    { boardAspect: boardWidth / Math.max(1e-6, boardHeight) },
+  );
+  calibrationVideoSize = null;
   view.arCalibrationOverlay.hidden = true;
   setStatus(view, overlayRendered
-    ? 'Four-corner calibration saved. The board bounds remain fixed while a 20% source margin includes nearby protruding artwork.'
+    ? 'Four-corner calibration saved. The PCB artwork now maps to the selected physical board outline.'
     : 'Four-corner calibration saved, but the PCB overlay could not be drawn.');
 }
 
 function applyTrackedCorners(tracking) {
-  if (!camera.active || !projectedSourceCanvas || tracking.confidence < 0.12) return;
-  const points = trackedCornerSmoother.filter(tracking.points, performance.now());
-  if (!fourCornerCalibration.updateTrackingPoints(points)) return;
-  projectedOverlay.render({
-    boardCanvas: projectedSourceCanvas,
-    viewport,
-    bounds: state.data.bounds,
-    matrix: fourCornerCalibration.homography,
-  });
+  if (fourCornerCalibration.active || !camera.active || !projectedSourceCanvas || tracking.confidence < 0.12) return;
+  if (tracking.relocalized) trackedCornerSmoother.reset();
+  trackingTarget = {
+    points: tracking.points.map((point) => ({ ...point })),
+    confidence: tracking.confidence,
+    timestamp: performance.now(),
+  };
+  setOverlayTrackingState('tracked');
+  scheduleTrackedOverlayPresentation();
 }
 
 function handleCameraTrackerState(message) {
+  recordTrackerEvent(message);
   if (message.type === 'calibrated') {
-    setStatus(view, `Markerless tracking is active using ${message.featureCount} board features.`);
+    view.arFourCornerButton.disabled = !camera.active || !cameraTracker.ready;
+    setOverlayTrackingState('tracked');
+    setStatus(view, `Markerless tracking is active using ${message.featureCount} board features across ${message.viewCount || 1} reference views.`);
+  } else if (message.type === 'tracking-state') {
+    const messages = {
+      SUSPECT: 'Tracking is uncertain. Checking a wider board region.',
+      RECOVERING: 'Tracking is recovering from board features.',
+      LOST: 'Tracking lost. Keep the board in view or realign the four corners.',
+      TRACKED: 'Markerless tracking recovered.',
+    };
+    const stateName = String(message.state || '').toLowerCase();
+    setOverlayTrackingState(stateName);
+    if (message.state === 'LOST') {
+      trackingTarget = null;
+      trackedCornerSmoother.reset();
+    } else if (message.state === 'TRACKED' && message.relocalized) {
+      trackedCornerSmoother.reset();
+    }
+    setStatus(view, messages[message.state] || 'Markerless tracking status changed.');
   } else if (message.type === 'calibration-failed' || message.state === 'error') {
+    trackingTarget = null;
+    trackedCornerSmoother.reset();
+    setOverlayTrackingState('lost');
+    if (message.state === 'error') clearTrackingDebugOverlay({ discardDiagnostic: true });
+    view.arFourCornerButton.disabled = !camera.active || !cameraTracker.ready;
     setStatus(view, message.message || 'Markerless tracking is unavailable. Calibrate again with the board fully visible.');
+  } else if (message.type === 'state' && message.state === 'ready') {
+    view.arFourCornerButton.disabled = !camera.active;
+    view.arFourCornerButton.title = state.data
+      ? 'Calibrate with four corners'
+      : 'Load a board before four-corner calibration';
+    setStatus(view, state.data
+      ? 'On-device vision is ready. Choose four-corner calibration from the AR menu.'
+      : 'On-device vision is ready. Load a board, then choose four-corner calibration.');
+  } else if (message.type === 'state' && message.message) {
+    view.arFourCornerButton.disabled = true;
+    setStatus(view, message.message);
   }
 }
 
 async function toggleCameraMode() {
-  if (camera.active) {
+  if (camera.active || camera.pending) {
     camera.stop();
     setStatus(view, 'AR camera mode closed.');
     return;
@@ -288,6 +742,7 @@ async function toggleCameraMode() {
   setBoardMenuOpen(false);
   try {
     await camera.start();
+    if (!camera.active) return;
     setStatus(view, state.data
       ? 'Camera active. Choose 4-corner calibration from the AR menu.'
       : 'Camera active. Load a board before calibration.');
@@ -297,8 +752,21 @@ async function toggleCameraMode() {
 }
 
 function loadBoard(rawBoard, name) {
+  trackingTarget = null;
+  trackedCornerSmoother.reset();
+  cancelFourCornerCalibration();
+  projectedOverlay.clear();
+  projectedSourceCanvas = null;
+  projectedSourceViewport = null;
+  physicalCalibrationBounds = null;
+  projectedOverlayBounds = null;
+  cameraTracker.reset();
+  clearTrackingDebugOverlay({ discardDiagnostic: true });
+  setOverlayTrackingState('idle');
   const board = normalizeBoard(rawBoard);
   setBoard(state, board);
+  physicalCalibrationBounds = physicalBoardBounds(board);
+  projectedOverlayBounds = attachedArtworkProjectionBounds(physicalCalibrationBounds);
   activeSequenceEntries = [];
   closeSearchWindow();
   view.sequenceWindow.hidden = true;
@@ -311,7 +779,8 @@ function loadBoard(rawBoard, name) {
   renderSequenceControls();
   renderLayers(view, state, render);
   updateBoardDetails(view, board);
-  view.arFourCornerButton.disabled = !camera.active;
+  view.arFourCornerButton.disabled = !camera.active || !cameraTracker.ready;
+  view.arFourCornerButton.title = 'Calibrate with four corners';
   setStatus(view, `Loaded ${name || board.name || 'board'}`);
   viewport.fit();
   render();
@@ -1042,6 +1511,36 @@ view.arMenuButton.addEventListener('click', () => {
   if (!view.boardMenu.hidden) setBoardMenuOpen(false);
   setArMenuOpen(!arMenuOpen);
 });
+view.devSettingsButton.addEventListener('click', () => {
+  const open = view.devSettingsWindow.hidden;
+  view.devSettingsWindow.hidden = !open;
+  view.devSettingsButton.setAttribute('aria-expanded', String(open));
+});
+view.devTrackingMethod.addEventListener('change', () => {
+  try {
+    localStorage.setItem(TRACKING_PROFILE_KEY, view.devTrackingMethod.value);
+    setStatus(view, 'Tracking performance profile saved. Restart AR mode to apply it.');
+  } catch {
+    setStatus(view, 'This browser did not allow the tracking preference to be saved.');
+  }
+});
+view.devShowTrackingFeatures.addEventListener('change', () => {
+  updateTrackingDebugEnabled(view.devShowTrackingFeatures.checked);
+  try {
+    localStorage.setItem(TRACKING_DEBUG_KEY, String(trackingDebugEnabled));
+    setStatus(view, trackingDebugEnabled
+      ? 'Tracking feature points are visible. Cyan is detected, amber matched, magenta optical flow, and green pose inliers.'
+      : 'Tracking feature points are hidden. Diagnostic metrics will continue to be collected locally.');
+  } catch {
+    setStatus(view, 'Feature visibility changed, but this browser did not allow the preference to be saved.');
+  }
+});
+view.devDownloadTrackingLog.addEventListener('click', downloadTrackingDiagnostics);
+view.devClearTrackingLog.addEventListener('click', () => {
+  trackingDiagnosticLog.clear();
+  view.devDownloadTrackingLog.disabled = true;
+  setStatus(view, 'Local tracking diagnostic log cleared.');
+});
 view.arCameraButton.addEventListener('click', toggleCameraMode);
 view.arTransparencyButton.addEventListener('click', () => {
   const open = view.arTransparencyControl.hidden;
@@ -1054,6 +1553,7 @@ view.arCalibrationOverlay.addEventListener('pointerdown', startCalibrationHandle
 view.arCalibrationOverlay.addEventListener('pointermove', moveCalibrationHandle);
 view.arCalibrationOverlay.addEventListener('pointerup', stopCalibrationHandleDrag);
 view.arCalibrationOverlay.addEventListener('pointercancel', stopCalibrationHandleDrag);
+view.arCalibrationOverlay.addEventListener('lostpointercapture', (event) => endCalibrationHandleDrag(event));
 view.arCalibrationApplyButton.addEventListener('click', applyFourCornerCalibration);
 view.arCalibrationCancelButton.addEventListener('click', () => {
   cancelFourCornerCalibration();
@@ -1290,11 +1790,45 @@ view.canvas.addEventListener('pointercancel', (event) => {
 });
 
 window.addEventListener('resize', () => {
+  endCalibrationHandleDrag(null);
+  hideCalibrationLoupe();
+  const previousSize = viewport.screenSize();
+  const calibrationPoints = fourCornerCalibration.active ? fourCornerCalibration.points : null;
+  const previousVideoSize = calibrationVideoSize;
   viewport.resize();
+  if (calibrationPoints?.length === 4 && state.data) {
+    const nextSize = viewport.screenSize();
+    const currentVideoSize = {
+      width: view.arCameraVideo.videoWidth || 1,
+      height: view.arCameraVideo.videoHeight || 1,
+    };
+    const intrinsicChanged = previousVideoSize
+      && (currentVideoSize.width !== previousVideoSize.width || currentVideoSize.height !== previousVideoSize.height);
+    if (intrinsicChanged) {
+      cancelFourCornerCalibration();
+      setStatus(view, 'Camera orientation changed. Start four-corner calibration again for the new view.');
+    } else {
+      const videoSize = previousVideoSize || currentVideoSize;
+      const nextPoints = calibrationPoints.map((point) => videoPointToDisplay(
+        displayPointToVideo(point, videoSize, { width: previousSize.w, height: previousSize.h }),
+        currentVideoSize,
+        { width: nextSize.w, height: nextSize.h },
+      ));
+      fourCornerCalibration.begin(physicalCalibrationBounds || state.data.bounds, nextPoints);
+      calibrationVideoSize = currentVideoSize;
+      renderFourCornerCalibration();
+    }
+  }
+  trackingTarget = null;
+  trackedCornerSmoother.reset();
+  clearTrackingDebugOverlay({ discardDiagnostic: true });
+  if (camera.active && projectedSourceCanvas) setOverlayTrackingState('recovering');
   if (!view.sequenceWindow.hidden) setSequenceTab(activeSequenceTab);
   fitStatusText(view);
   render();
 });
+
+window.addEventListener('blur', () => endCalibrationHandleDrag(null));
 
 function isTextEntryTarget(target) {
   return target instanceof HTMLElement

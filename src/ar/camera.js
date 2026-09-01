@@ -1,15 +1,39 @@
 export function createCameraController(video, onStateChange = () => {}) {
   let stream = null;
+  let startPromise = null;
+  let generation = 0;
 
   function notify(state, message = '') {
     onStateChange({ state, message, stream });
   }
 
   function stop() {
-    for (const track of stream?.getTracks() || []) track.stop();
+    generation += 1;
+    startPromise = null;
+    const currentStream = stream;
     stream = null;
     video.srcObject = null;
+    for (const track of currentStream?.getTracks() || []) track.stop();
     notify('stopped');
+  }
+
+  async function applySupportedCameraControls(track) {
+    const capabilities = track?.getCapabilities?.();
+    if (!capabilities) return;
+    const advanced = {};
+    if (Array.isArray(capabilities.focusMode) && capabilities.focusMode.includes('continuous')) {
+      advanced.focusMode = 'continuous';
+    }
+    if (Array.isArray(capabilities.exposureMode) && capabilities.exposureMode.includes('continuous')) {
+      advanced.exposureMode = 'continuous';
+    }
+    if (!Object.keys(advanced).length) return;
+    try {
+      await track.applyConstraints({ advanced: [advanced] });
+    } catch {
+      // Capability reporting varies between mobile camera drivers. The stream
+      // remains usable even when an advertised optional control is rejected.
+    }
   }
 
   async function start() {
@@ -21,42 +45,77 @@ export function createCameraController(video, onStateChange = () => {}) {
       throw new Error(message);
     }
     if (stream) return stream;
+    if (startPromise) return startPromise;
 
+    const requestGeneration = ++generation;
     notify('requesting', 'Requesting camera permission...');
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-      });
-      video.srcObject = stream;
-      await video.play();
-      const [track] = stream.getVideoTracks();
-      track?.addEventListener('ended', () => {
+    startPromise = (async () => {
+      let requestedStream = null;
+      try {
+        requestedStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30, max: 30 },
+          },
+        });
+        if (requestGeneration !== generation) {
+          for (const track of requestedStream.getTracks()) track.stop();
+          return null;
+        }
+        stream = requestedStream;
+        video.srcObject = stream;
+        await video.play();
+        if (requestGeneration !== generation || stream !== requestedStream) {
+          for (const track of requestedStream.getTracks()) track.stop();
+          return null;
+        }
+        const [track] = requestedStream.getVideoTracks();
+        track?.addEventListener('ended', () => {
+          if (stream !== requestedStream) return;
+          stream = null;
+          video.srcObject = null;
+          notify('stopped', 'Camera stopped.');
+        }, { once: true });
+        await applySupportedCameraControls(track);
+        if (requestGeneration !== generation || stream !== requestedStream || track?.readyState === 'ended') {
+          for (const requestedTrack of requestedStream.getTracks()) requestedTrack.stop();
+          if (stream === requestedStream) stream = null;
+          if (video.srcObject === requestedStream) video.srcObject = null;
+          return null;
+        }
+        notify('active');
+        return stream;
+      } catch (error) {
+        for (const track of requestedStream?.getTracks() || []) track.stop();
+        if (requestGeneration !== generation) return null;
         stream = null;
         video.srcObject = null;
-        notify('stopped', 'Camera stopped.');
-      }, { once: true });
-      notify('active');
-      return stream;
-    } catch (error) {
-      stream = null;
-      video.srcObject = null;
-      const message = error?.name === 'NotAllowedError'
-        ? 'Camera permission was not granted.'
-        : error?.name === 'NotFoundError'
-          ? 'No camera was found on this device.'
-          : `Could not start the camera: ${error?.message || 'unknown error'}`;
-      notify('error', message);
-      throw error;
-    }
+        const message = error?.name === 'NotAllowedError'
+          ? 'Camera permission was not granted.'
+          : error?.name === 'NotFoundError'
+            ? 'No camera was found on this device.'
+            : error?.name === 'NotReadableError'
+              ? 'The camera is already in use by another app or browser tab.'
+              : error?.name === 'AbortError'
+                ? 'Camera startup was interrupted. Close and reopen AR mode to try again.'
+                : error?.name === 'OverconstrainedError'
+                  ? 'This camera could not satisfy the requested mobile video settings.'
+                  : `Could not start the camera: ${error?.message || 'unknown error'}`;
+        notify('error', message);
+        throw error;
+      } finally {
+        if (requestGeneration === generation) startPromise = null;
+      }
+    })();
+    return startPromise;
   }
 
   return {
     get active() { return Boolean(stream); },
+    get pending() { return Boolean(startPromise) && !stream; },
     start,
     stop,
   };
