@@ -11,6 +11,10 @@ const PROFILES = {
 const WORKER_START_TIMEOUT_MS = 25_000;
 const EDGE_DETECTION_TIMEOUT_MS = 8_000;
 
+function logStartupTiming(stage, startedAt) {
+  console.info(`[AR-DUINO] ${stage}: ${Math.round(performance.now() - startedAt)} ms`);
+}
+
 function selectedProfile() {
   let name = 'balanced';
   try {
@@ -285,6 +289,7 @@ export function createCameraTracker(video, {
     }
 
     profile = selectedProfile();
+    const startupStartedAt = performance.now();
     let createdWorker = null;
     try {
       createdWorker = new Worker(new URL('./camera-tracker.worker.js', import.meta.url));
@@ -331,6 +336,7 @@ export function createCameraTracker(video, {
       }
       if (message.type === 'state' && message.state === 'ready') {
         ready = true;
+        logStartupTiming('tracker initialization', startupStartedAt);
         if (workerStartTimerId != null) window.clearTimeout(workerStartTimerId);
         workerStartTimerId = null;
         scheduleCapture();

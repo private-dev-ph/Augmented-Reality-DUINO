@@ -196,6 +196,14 @@ view.devIsolateSequence.checked = isolateSequenceInAr;
 view.arDebugCanvas.hidden = !trackingDebugEnabled;
 cameraTracker.setDebugEnabled(trackingDebugEnabled);
 const camera = createCameraController(view.arCameraVideo, ({ state: cameraState, message }) => {
+  // Worker/WASM loading is independent of the camera stream. Start it while
+  // the browser is resolving the permission request so calibration can be
+  // ready sooner, without making the preview wait for it.
+  if (cameraState === 'requesting') {
+    cameraTracker.start();
+    if (message) setStatus(view, message);
+    return;
+  }
   const active = cameraState === 'active';
   resetArPresentationZoom();
   view.boardWrap.classList.toggle('camera-active', active);
@@ -222,7 +230,9 @@ const camera = createCameraController(view.arCameraVideo, ({ state: cameraState,
     view.devTrackingMetrics.textContent = 'Tracker inactive · diagnostics retained for download';
     cameraTracker.stop();
   } else {
-    view.arCalibrationButton.disabled = true;
+    // The tracker may have completed while camera permission/playback was in
+    // progress, so preserve its ready state instead of disabling calibration.
+    view.arCalibrationButton.disabled = !state.data || !cameraTracker.ready;
     cameraTracker.start();
   }
   if (message) setStatus(view, message);

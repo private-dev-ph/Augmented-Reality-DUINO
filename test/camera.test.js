@@ -86,7 +86,7 @@ test('stopping during permission acquisition disposes the late camera stream', a
   }
 });
 
-test('stopping during optional camera controls cannot reactivate the old stream', async () => {
+test('camera becomes active before optional controls finish and stopping cannot reactivate it', async () => {
   const controls = deferred();
   const stream = fakeStream({ constraintPromise: controls.promise });
   const states = [];
@@ -94,13 +94,20 @@ test('stopping during optional camera controls cannot reactivate the old stream'
   const video = { srcObject: null, play: () => Promise.resolve() };
   const controller = createCameraController(video, ({ state }) => states.push(state));
   const starting = controller.start();
-  await Promise.resolve();
-  await Promise.resolve();
-  controller.stop();
-  controls.resolve();
   try {
-    assert.equal(await starting, null);
-    assert.deepEqual(states, ['requesting', 'stopped']);
+    assert.equal(await starting, stream);
+    assert.deepEqual(states, ['requesting', 'active']);
+    assert.deepEqual(stream.constraints, [{ advanced: [{ focusMode: 'continuous', exposureMode: 'continuous' }] }]);
+
+    let controlsFinished = false;
+    controls.promise.then(() => { controlsFinished = true; });
+    await Promise.resolve();
+    assert.equal(controlsFinished, false);
+
+    controller.stop();
+    controls.resolve();
+    await Promise.resolve();
+    assert.deepEqual(states, ['requesting', 'active', 'stopped']);
     assert.equal(stream.track.stopped, true);
     assert.equal(video.srcObject, null);
     assert.equal(controller.active, false);
