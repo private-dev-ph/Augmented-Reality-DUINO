@@ -12,7 +12,7 @@ The application can be tested without deployment by running Vite locally and cre
 
 The repository includes the Vite development configuration that permits the tunnel's random `trycloudflare.com` host. No certificates, Cloudflare Pages project, account login, or machine-specific application configuration is required.
 
-## Start a test session
+## Start a hot-reload test session
 
 Run the following commands from two PowerShell windows in the project folder.
 
@@ -28,7 +28,7 @@ Start the HTTPS tunnel in the second window:
 cloudflared tunnel --url http://localhost:5173
 ```
 
-After `cloudflared` prints its `https://*.trycloudflare.com` URL, open that exact address on the test device. Camera access can then be granted through the AR button. Vite hot-module reload remains active, so saved source changes refresh the page on the device.
+After `cloudflared` prints its `https://*.trycloudflare.com` URL, open that exact address in the phone’s normal browser. Camera access can then be granted through the AR button. Vite hot-module reload remains active, so saved source changes refresh the page on the device.
 
 The included Vite development configuration accepts the tunnel's random `trycloudflare.com` host. No production host allow-list is changed.
 
@@ -42,3 +42,5 @@ Use `Ctrl+C` in the Cloudflare Tunnel window to close the public HTTPS address. 
 - The address changes each time the tunnel starts. This is expected.
 - The phone and computer must remain online. They do not need to be on the same Wi-Fi network after the tunnel has started.
 - If the camera button reports a permission error at the HTTPS URL, grant **Camera** permission for that `trycloudflare.com` site in the browser settings, then reload the page.
+- This is the **source/HMR** path. It is useful while editing, but it does not prove that the generated production artifact or Cloudflare Pages headers are correct. Use the [built-artifact tunnel path](cloudflare-pages-dev.md#test-the-production-artifact-on-a-phone) before deployment.
+- For a focused AR smoke test, load the matching bundled Arduino sample, confirm the entire physical board is visible, place the handles on the PCB outline in top-left → top-right → bottom-right → bottom-left order, and calibrate under diffuse light. Camera permission alone is not a tracking acceptance result.

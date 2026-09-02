@@ -6,6 +6,12 @@ AR-DUINO uses markerless, planar tracking. The user identifies the four physical
 
 This document describes the system that is implemented now. The research notes also discuss AprilTag, WebXR, neural feature matching, PnP, lens correction, and sensor fusion, but those are possible future directions, not current features.
 
+## Reading this as a project case study
+
+This is the engineering companion to the portfolio README, not a claim of production-grade inspection accuracy. The implementation shows how a static browser application can keep the data model, image processing, and projected interaction on-device while refusing to present a stale pose as live. Use the [mobile AR workflow](mobile-ar-workflow.md) for the hands-on demo path, [development and setup](development-and-setup.md) for a repeatable local environment, and [Cloudflare Pages development](cloudflare-pages-dev.md) for hosting checks.
+
+The strongest current demonstration is a matching bundled Arduino sample and physical board under controlled light. The generic parser capabilities are real, but arbitrary board upload is disabled in the showcase UI. Treat every tracking threshold in this document as an engineering setting that needs validation against the intended physical boards and devices.
+
 ## The tracking path at a glance
 
 ```text

@@ -1,67 +1,171 @@
-# AR-DUINO PCB viewer
+# AR-DUINO
 
-This project is a browser-based PCB viewer for POGI JSON, EAGLE XML/ZIP, and ODB++ ZIP files. The application is now organized as a Vite-powered Node project instead of one self-contained HTML file.
+> A browser-based PCB viewer that turns a physical board into an interactive inspection surface through on-device, markerless augmented reality.
 
-## Development
+![Project status](https://img.shields.io/badge/status-active%20prototype-2f7d6d) ![Runtime](https://img.shields.io/badge/runtime-browser--only-4b6b9a) ![Privacy](https://img.shields.io/badge/camera%20frames-stay%20on%20device-7a5c61) ![License](https://img.shields.io/badge/license-MIT-5b6573)
 
-```bash
-npm install
-npm run dev
+<p align="center">
+  <img src="public/assets/AR-DUINO%20logo.png" alt="AR-DUINO logo" width="260">
+</p>
+
+<!-- Screenshot placeholder: add a wide desktop image showing the loaded Arduino board, layers panel, and selected component. Suggested path: docs/assets/overview.png -->
+
+## The idea
+
+Inspecting a PCB usually means switching attention between a physical board, a board viewer, component references, and an inspection checklist. AR-DUINO explores a more direct workflow: keep the board in view, recognize it from the phone camera, and project the same board data back onto the real hardware.
+
+The project is deliberately built as a static web application. Board rendering, file parsing, camera access, tracking, and overlay composition run in the browser; a deployment only serves the app and its assets. That keeps the demo easy to host and avoids sending live camera frames to a server.
+
+## Showcase
+
+<!-- APNG placeholder: add a short, looping capture of calibration, tracking, and a selected inspection step. Suggested path: docs/assets/ar-inspection-flow.apng -->
+
+| Area | What the current prototype demonstrates |
+| --- | --- |
+| PCB viewer | Renders bundled Arduino UNO and MEGA 2560 examples, with pan, zoom, layer controls, selection, and connectivity highlighting. |
+| Board formats | Parses JSON, EAGLE XML/ZIP, and ODB++ ZIP in the browser. The public demo currently exposes bundled samples; the generic board-upload path remains disabled in the UI. |
+| AR calibration | Uses a four-corner physical-board selection, with an optional bounded edge-detection assist and preview before the reference is applied. |
+| Markerless tracking | Combines AKAZE feature recovery with pyramidal Lucas–Kanade optical flow, then accepts a pose only after geometric and temporal validation. |
+| Inspection workflow | Lets a user assemble, save, load, navigate, pass, or flag a component/net inspection sequence. AR can isolate the active sequence target. |
+| Privacy and diagnostics | Keeps vision work on-device. The developer view can visualize tracking points and live quality data without exposing camera frames. |
+
+## A representative flow
+
+```mermaid
+flowchart LR
+    A[Open a bundled board sample] --> B[Explore board data\ncomponents, nets, layers]
+    B --> C[Create or load\nan inspection sequence]
+    C --> D[Open AR camera\non an HTTPS origin]
+    D --> E[Place four board corners\nand review optional edge assist]
+    E --> F[Calibrate a canonical\nboard reference]
+    F --> G[Track the physical PCB\non device]
+    G --> H[Project current selection\nor active sequence step]
+    H --> I[Pass, flag, or move\nto the next step]
 ```
 
-The production bundle is generated with `npm run build`. `npm run check` validates module syntax and `npm test` runs the model/parser tests.
+## How the system is put together
 
-Node 22.12 or newer is recommended (the repository includes `.node-version`).
+```mermaid
+flowchart TB
+    subgraph Browser[Browser — all application work]
+        UI[UI and shared state]
+        Parse[Board parsers\nPOGI • EAGLE • ODB++]
+        Render[Canvas PCB renderer\nselection and connectivity]
+        Camera[getUserMedia rear camera]
+        Worker[Web Worker + OffscreenCanvas\nOpenCV 4.13 WebAssembly]
+        Pose[Pose validation\nand tracking state]
+        Overlay[WebGL projective overlay\nCanvas2D fallback]
+        UI <--> Parse
+        UI <--> Render
+        Camera --> Worker
+        Worker --> Pose
+        Pose --> Overlay
+        Render --> Overlay
+        UI --> Overlay
+    end
+    Static[Static host / Cloudflare Pages\nHTML, JS, WASM, sample assets] --> Browser
+```
 
-## Mobile AR tracking
+The flat viewer and the AR mode share one board model and selection state. A net or component selected in either surface is therefore the same selection, not a second AR-only data model.
 
-AR tracking is markerless and runs completely on the phone. Four-corner calibration rectifies the live board into a canonical reference, builds a 15-view synthetic angle/roll atlas, and uses OpenCV 4.13 AKAZE feature matching for global recovery. Pyramidal Lucas–Kanade optical flow supplies the faster frames between descriptor anchors. Trusted real camera angles are learned as a small, bounded set of on-device recovery views. Every pose must pass RANSAC inlier, board coverage, reprojection-error, convexity, bounds, and temporal checks before it is presented.
+## Tracking logic
 
-See [How AR-DUINO tracks a PCB on mobile](docs/ar-tracking-architecture.md) for the full tracking pipeline, mobile compatibility, debugging guide, known limits, and Cloudflare Pages deployment model.
+```mermaid
+flowchart TD
+    A[Camera frame] --> B{One frame already\nin flight?}
+    B -->|Yes| C[Skip frame]
+    B -->|No| D[Send ImageBitmap\nto worker]
+    D --> E{Recent pose healthy?}
+    E -->|Yes| F[Optical flow for\nnearby motion]
+    E -->|No / periodic anchor| G[AKAZE descriptor\nrecovery against atlas]
+    F --> H[RANSAC homography]
+    G --> H
+    H --> I{Quality gates pass?\ninliers • coverage • error\nconvexity • bounds • time}
+    I -->|Yes| J[TRACKED\nfilter four corners]
+    I -->|No, recent good pose| K[SUSPECT / RECOVERING\nfade while searching]
+    I -->|No, stale pose| L[LOST\nhide overlay]
+    J --> M[Project board artwork\nonto physical PCB]
+    K --> M
+```
 
-The vision engine is a custom 3.4 MB single-threaded WebAssembly build in `public/vendor/opencv`. It is loaded inside a classic worker, allows only one frame in flight, and performs no server-side image processing. The overlay is presented at display refresh rate with a coherent pose filter and an exact WebGL homography; Canvas2D remains the rendering fallback. Suspect poses fade and lost poses are hidden instead of leaving a frozen overlay that looks live.
+Read the detailed explanation in [AR tracking architecture](docs/ar-tracking-architecture.md). It distinguishes implemented behavior from future directions and documents the performance and tracking limits that matter in real use.
 
-For best results:
+## Current scope and honest limits
 
-1. Use diffuse lighting and avoid glare across the solder mask.
-2. Fill a useful portion of the camera view with the board and wait for focus.
-3. Place the four handles in top-left, top-right, bottom-right, bottom-left order.
-4. Calibrate while the complete physical board is visible.
+AR-DUINO is an active prototype intended to demonstrate a practical inspection interaction, not a production inspection system. Its strongest conditions are a flat, visually distinctive board under diffuse light, with the full outline visible and the camera reasonably focused.
 
-No markerless system can recover detail that is nearly edge-on, fully occluded, blurred, or visually repetitive. The angle atlas materially improves recovery through large perspective changes, but production acceptance still requires replay and live-device validation using the actual boards, lighting, and maximum intended angle.
+- The tracker is markerless and planar. It is not a full 3D reconstruction system: tall components, lens distortion, heavy reflections, motion blur, severe occlusion, or an almost edge-on view can degrade or defeat the pose.
+- The synthetic recovery atlas improves large-angle recovery but cannot reproduce every real lighting or parallax condition. Real-device and replay validation with the intended board and operating environment are still required before operational use.
+- The shipped demo is sample-first. It loads the included Arduino boards; importing arbitrary boards is implemented in the parsing layer but intentionally disabled in the current interface.
+- Camera access needs HTTPS on phones. `localhost` is trusted only on the machine running the server.
+- Browser and device support varies. AR mode needs Web Workers, `createImageBitmap`, `OffscreenCanvas`, WebAssembly, and a usable camera; WebGL improves projection but has a Canvas2D fallback.
 
-Developer settings include **Show tracked feature points**. Cyan dots are detected features, amber rings are descriptor matches, magenta crosses survived forward/backward optical flow, and green rings are the inliers used for the accepted board pose. The panel also shows live counts and rejection metrics. **Download log** exports a bounded JSON session containing those metrics, camera settings, and rejection reasons; it never includes camera frames or board-file contents.
+## Technology choices
 
-## Architecture
+- **Vite + vanilla ES modules** for a small, transparent static application.
+- **Canvas2D** for the PCB viewer, hit testing, and a rendering fallback.
+- **OpenCV 4.13 WebAssembly** in a classic worker for markerless feature tracking without a backend.
+- **AKAZE + RANSAC homography** for global recovery and **pyramidal Lucas–Kanade flow** for fast, local motion updates.
+- **WebGL** for an exact projective overlay when available.
+- **Browser-native ZIP processing** for EAGLE/ODB++ inputs and **local browser storage** for UI preferences.
+- **Node’s built-in test runner** for focused model, parser, camera, tracking-geometry, and renderer regression tests.
+
+## Project structure
 
 ```text
-index.html                 Application shell and semantic markup
-src/main.js                Composition root and browser event wiring
-src/state.js               Application state and board lifecycle
-src/model/board.js         Board normalization, geometry helpers, and statistics
-src/model/connectivity.js  Component/net graph resolution for selection highlighting
-src/parsers/
-  file-loader.js           File-type detection and loading workflow
-  zip.js                   Browser-native ZIP reader
-  eagle.js                 EAGLE board/schematic parser
-  odb.js                   ODB++ parser
-src/render/
-  viewport.js              World/screen coordinates, zoom, pan, and fit
-  board-renderer.js        Canvas drawing and component hit testing
-src/ui/view.js             DOM updates for layers, warnings, and selection
-src/styles.css             Application styles
-src/ar/camera-tracker.js   Camera-frame scheduling and worker bridge
-src/ar/camera-tracker.worker.js  AKAZE atlas, LK flow, and pose validation
-src/ar/projected-overlay.js      WebGL homography renderer with 2D fallback
-test/board.test.js         Regression tests for normalization and ODB++ parsing
+src/
+├── ar/             Camera lifecycle, calibration, tracking worker, diagnostics, overlay
+├── model/          Board normalization, connectivity, inspection-sequence model
+├── parsers/        POGI, EAGLE, ODB++, ZIP, and file-loading support
+├── render/         Viewport transforms and Canvas PCB rendering
+├── ui/             DOM view helpers and theme controls
+├── main.js         Composition root and browser event wiring
+└── state.js        Shared application and board lifecycle state
+public/
+├── assets/         Brand asset
+├── vendor/opencv/  Versioned custom OpenCV JS/WASM pair
+└── *.zip / *.json  Bundled Arduino demo boards and sequences
+docs/               Setup, local HTTPS testing, deployment, and tracking design notes
+test/               Node regression tests and manual browser probes
 ```
 
-`pcb_json_viewer.html` is retained as the original single-file reference. The maintained application entry point is `index.html`.
+`index.html` is the maintained application entry point. [`pcb_json_viewer.html`](pcb_json_viewer.html) is retained as the original single-file reference, not the active application.
 
-The interface uses LibreFlow Annotate's Clay & Coral palette through `src/theme.css`: warm neutral surfaces, coral actions, stone borders, muted text, and a matching canvas work surface.
+## Run it locally
 
-When connectivity highlighting is enabled, clicking a component highlights its incident nets and the components attached to them. Clicking a rendered net trace or copper contour selects that net and highlights its connected components and neighboring nets.
+**Prerequisite:** Node.js `22.12.0` or newer (the pinned version is in [`.node-version`](.node-version)).
 
-The View panel also includes a Copper artwork toggle. Turning it off hides raw conductor-layer graphics and filled copper pours while preserving net traces and connectivity data, so net/component selection remains available.
+```powershell
+npm.cmd install
+npm.cmd run dev
+```
 
-Board controls are opened from the hamburger button in the canvas corner. The demo loads the provided Arduino samples, along with View and Layers & presets panels. Desktop zoom uses the mouse wheel; touch devices support pinch zoom and drag pan. The upload workflow remains in code but is currently disabled for the sample-only demo.
+Open the local URL Vite prints. Use the Arduino sample menu to load a board. For phone-camera testing, follow the [local HTTPS guide](docs/local-https-camera-testing.md); a LAN `http://` address will not be enough for camera permission.
+
+```powershell
+npm.cmd run check
+npm.cmd test
+npm.cmd run build
+```
+
+For a detailed, repeatable workstation setup and contribution workflow, see [Development and setup guide](docs/development-and-setup.md).
+
+## Documentation map
+
+| Document | Use it when you need to… |
+| --- | --- |
+| [Development and setup guide](docs/development-and-setup.md) | Prepare a machine, understand commands, run checks, or make a safe change. |
+| [Mobile AR workflow](docs/mobile-ar-workflow.md) | Run the sample demo and understand calibration, inspection sequences, and diagnostics. |
+| [AR tracking architecture](docs/ar-tracking-architecture.md) | Review the on-device vision pipeline, quality gates, design decisions, and known limitations. |
+| [Local HTTPS camera testing](docs/local-https-camera-testing.md) | Test camera behavior from a phone using a temporary HTTPS tunnel. |
+| [Cloudflare Pages development](docs/cloudflare-pages-dev.md) | Prepare a static Pages deployment or a built-preview session. |
+
+## Validation approach
+
+The automated suite protects the browser-independent behavior most likely to regress: board normalization, file parsing, connectivity and inspection-sequence state, camera lifecycle, calibration geometry, overlay projection, tracker scheduling, and tracking diagnostics. The `test/` directory also includes manual browser probes for worker loading and visual overlay verification.
+
+Those checks are a useful safety net, but they do not replace device testing. Tracking thresholds should be evaluated against recordings and live boards across the lighting, board finishes, camera hardware, and maximum angles expected in the intended use case.
+
+## License
+
+Released under the [MIT License](LICENSE).
