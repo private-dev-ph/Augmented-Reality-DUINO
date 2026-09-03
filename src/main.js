@@ -7,6 +7,7 @@ import { createCameraTracker, TRACKING_PROFILE_KEY } from './ar/camera-tracker.j
 import { computeHomography, createFourCornerCalibration, isValidCalibrationQuad, unprojectPoint } from './ar/four-corner-calibration.js';
 import { attachedArtworkProjectionBounds, createBoardOnlySnapshot, createProjectedOverlay } from './ar/projected-overlay.js';
 import { createTrackingDiagnosticLog, TRACKING_DEBUG_KEY } from './ar/tracking-diagnostics.js';
+import { sampleFiles } from 'virtual:sample-manifest';
 import {
   createCornerSmoother,
   displayPointToVideo,
@@ -246,10 +247,7 @@ let sequenceResumeIndex = 0;
 let renderQueued = false;
 let refreshingProjectedSource = false;
 
-const SAMPLE_SEQUENCE_FILES = [
-  { matches: /uno[^a-z0-9]*th[^a-z0-9]*rev3e/i, file: 'UNO-TH_Rev3e-sequence.json' },
-  { matches: /mega2560[^a-z0-9]*rev3e/i, file: 'MEGA2560-Rev3e-sequence.json' },
-];
+let loadedSampleId = '';
 
 function render() {
   if (renderQueued) return;
@@ -1130,7 +1128,7 @@ async function toggleCameraMode() {
   }
 }
 
-function loadBoard(rawBoard, name) {
+function loadBoard(rawBoard, name, { sampleId = '' } = {}) {
   resetArPresentationZoom();
   trackingTarget = null;
   sequenceResumeIndex = 0;
@@ -1146,6 +1144,7 @@ function loadBoard(rawBoard, name) {
   setOverlayTrackingState('idle');
   const board = normalizeBoard(rawBoard);
   setBoard(state, board);
+  loadedSampleId = sampleId;
   physicalCalibrationBounds = physicalBoardBounds(board);
   projectedOverlayBounds = attachedArtworkProjectionBounds(physicalCalibrationBounds);
   activeSequenceEntries = [];
@@ -1288,16 +1287,39 @@ function setBoardMenuOpen(open) {
   if (!open) closeControlWindow();
 }
 
-async function loadSampleBoard(path) {
-  const name = path.split('/').pop();
+function sampleAssetUrl(path) {
+  const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
+  // The build-time manifest URL-encodes every public-file path segment.
+  return `${baseUrl}${path}`;
+}
+
+function renderSampleOptions() {
+  view.sampleOptions.replaceChildren();
+  for (const sample of sampleFiles) {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.dataset.sampleId = sample.id;
+    option.textContent = sample.name;
+    view.sampleOptions.append(option);
+  }
+  if (!sampleFiles.length) {
+    const empty = document.createElement('p');
+    empty.className = 'control-copy';
+    empty.textContent = 'No sample reference files were found.';
+    view.sampleOptions.append(empty);
+  }
+}
+
+async function loadSampleBoard(sample) {
+  const name = sample.referencePath.split('/').at(-1);
   try {
     setStatus(view, `Reading ${name}...`);
-    const response = await fetch(path);
+    const response = await fetch(sampleAssetUrl(sample.referencePath));
     if (!response.ok) throw new Error(`Sample board could not be loaded (${response.status}).`);
     const blob = await response.blob();
     const file = new File([blob], name, { type: blob.type || 'application/zip' });
     const { board, name: boardName } = await loadBoardFile(file);
-    loadBoard(board, boardName);
+    loadBoard(board, sample.name || boardName, { sampleId: sample.id });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setStatus(view, `Load failed: ${message}`);
@@ -1770,11 +1792,9 @@ function installSequence(sequence, message) {
   setStatus(view, message);
 }
 
-function sampleSequenceUrl(boardName) {
-  const sample = SAMPLE_SEQUENCE_FILES.find(({ matches }) => matches.test(String(boardName || '')));
-  if (!sample) return '';
-  const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
-  return `${baseUrl}${sample.file}`;
+function sampleSequenceUrl() {
+  const sample = sampleFiles.find((candidate) => candidate.id === loadedSampleId);
+  return sample?.sequencePath ? sampleAssetUrl(sample.sequencePath) : '';
 }
 
 async function loadSampleSequence() {
@@ -1782,7 +1802,7 @@ async function loadSampleSequence() {
     view.sequenceEditorStatus.textContent = 'Load a board before loading its sequence.';
     return;
   }
-  const url = sampleSequenceUrl(state.data.name);
+  const url = sampleSequenceUrl();
   if (!url) {
     view.sequenceEditorStatus.textContent = 'No bundled sequence is available for this board. You can create one or upload a JSON file.';
     return;
@@ -2100,9 +2120,12 @@ for (const item of view.menuItems) {
 }
 view.controlWindowClose.addEventListener('click', closeControlWindow);
 view.controlBackdrop.addEventListener('click', closeControlWindow);
-for (const option of view.sampleOptions) {
-  option.addEventListener('click', () => loadSampleBoard(option.dataset.sample));
-}
+renderSampleOptions();
+view.sampleOptions.addEventListener('click', (event) => {
+  const option = event.target.closest('button[data-sample-id]');
+  const sample = sampleFiles.find((candidate) => candidate.id === option?.dataset.sampleId);
+  if (sample) loadSampleBoard(sample);
+});
 view.fileInput.addEventListener('change', (event) => {
   openBoardFile(event.target.files[0]);
   event.target.value = '';
