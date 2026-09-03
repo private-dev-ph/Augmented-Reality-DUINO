@@ -266,6 +266,37 @@ function shouldIsolateSequenceSelection() {
     && Boolean(state.selected || state.selectedNet);
 }
 
+// AR is intentionally rendered with the dark board palette in both app themes.
+// Keep this capture isolated: immediately restore the user's theme and redraw
+// the regular viewer once the projection source has been copied.
+function createDarkArSourceSnapshot({ isolateSequenceSelection = false } = {}) {
+  const root = document.documentElement;
+  const originalMode = root.getAttribute('data-mode');
+  const gridVisible = state.view.grid;
+  try {
+    state.view.grid = false;
+    root.dataset.mode = 'dark';
+    renderer.render({ isolateSequenceSelection });
+    return {
+      canvas: createBoardOnlySnapshot(
+        view.canvas,
+        getComputedStyle(root).getPropertyValue('--canvas-bg'),
+        {
+          viewport,
+          physicalBounds: physicalCalibrationBounds,
+          projectionBounds: projectedOverlayBounds,
+        },
+      ),
+      viewport: captureSourceViewport(),
+    };
+  } finally {
+    if (originalMode === null) root.removeAttribute('data-mode');
+    else root.setAttribute('data-mode', originalMode);
+    state.view.grid = gridVisible;
+    renderer.render();
+  }
+}
+
 // The camera transform changes on every tracking frame, but the projected
 // source only needs to be rebuilt when the PCB viewer state changes. Keeping
 // this work behind the normal render queue makes AR selection, search, layer,
@@ -274,24 +305,10 @@ function refreshProjectedSource() {
   if (refreshingProjectedSource || !camera.active || !state.data || !fourCornerCalibration.homography) return;
   if (!physicalCalibrationBounds || !projectedOverlayBounds) return;
   refreshingProjectedSource = true;
-  const gridVisible = state.view.grid;
-  let restoredGridAndRendered = false;
   try {
-    state.view.grid = false;
-    renderer.render({ isolateSequenceSelection: shouldIsolateSequenceSelection() });
-    const nextSourceCanvas = createBoardOnlySnapshot(
-      view.canvas,
-      getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg'),
-      {
-        viewport,
-        physicalBounds: physicalCalibrationBounds,
-        projectionBounds: projectedOverlayBounds,
-      },
-    );
-    const nextSourceViewport = captureSourceViewport();
-    state.view.grid = gridVisible;
-    renderer.render();
-    restoredGridAndRendered = true;
+    const { canvas: nextSourceCanvas, viewport: nextSourceViewport } = createDarkArSourceSnapshot({
+      isolateSequenceSelection: shouldIsolateSequenceSelection(),
+    });
     const overlayRendered = projectedOverlay.render({
       boardCanvas: nextSourceCanvas,
       viewport: nextSourceViewport,
@@ -308,10 +325,6 @@ function refreshProjectedSource() {
     // future viewer updates or leave the grid hidden.
     try { setStatus(view, 'AR overlay refresh skipped; keeping the last projection.'); } catch { /* status UI may be unavailable during teardown */ }
   } finally {
-    state.view.grid = gridVisible;
-    if (!restoredGridAndRendered) {
-      try { renderer.render(); } catch { /* retain the last projection if redraw also fails */ }
-    }
     refreshingProjectedSource = false;
   }
 }
@@ -340,25 +353,10 @@ function clearCalibrationPreview({ discardSource = true } = {}) {
 function buildCalibrationPreviewSource() {
   if (calibrationPreviewSourceCanvas && calibrationPreviewSourceViewport) return true;
   if (!state.data || !physicalCalibrationBounds || !projectedOverlayBounds) return false;
-  const gridVisible = state.view.grid;
-  try {
-    state.view.grid = false;
-    renderer.render();
-    calibrationPreviewSourceCanvas = createBoardOnlySnapshot(
-      view.canvas,
-      getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg'),
-      {
-        viewport,
-        physicalBounds: physicalCalibrationBounds,
-        projectionBounds: projectedOverlayBounds,
-      },
-    );
-    calibrationPreviewSourceViewport = captureSourceViewport();
-    return true;
-  } finally {
-    state.view.grid = gridVisible;
-    renderer.render();
-  }
+  const snapshot = createDarkArSourceSnapshot();
+  calibrationPreviewSourceCanvas = snapshot.canvas;
+  calibrationPreviewSourceViewport = snapshot.viewport;
+  return true;
 }
 
 function renderCalibrationPreview() {
@@ -992,25 +990,14 @@ function applyFourCornerCalibration() {
     setStatus(view, result.error);
     return;
   }
-  const gridVisible = state.view.grid;
-  state.view.grid = false;
   if (calibrationPreviewSourceCanvas && calibrationPreviewSourceViewport) {
     projectedSourceCanvas = calibrationPreviewSourceCanvas;
     projectedSourceViewport = calibrationPreviewSourceViewport;
   } else {
-    renderer.render();
-    projectedSourceCanvas = createBoardOnlySnapshot(
-      view.canvas,
-      getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg'),
-      {
-        viewport,
-        physicalBounds: physicalCalibrationBounds,
-        projectionBounds: projectedOverlayBounds,
-      },
-    );
-    projectedSourceViewport = captureSourceViewport();
+    const snapshot = createDarkArSourceSnapshot();
+    projectedSourceCanvas = snapshot.canvas;
+    projectedSourceViewport = snapshot.viewport;
   }
-  state.view.grid = gridVisible;
   renderer.render();
   const overlayRendered = projectedOverlay.render({
     boardCanvas: projectedSourceCanvas,
