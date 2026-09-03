@@ -7,9 +7,10 @@ export function createCameraController(video, onStateChange = () => {}) {
     onStateChange({ state, message, stream });
   }
 
-  function logStartupTiming(operation, startedAt) {
-    console.info(`[camera] ${operation}: ${Math.round(performance.now() - startedAt)}ms`);
-  }
+function logStartupTiming(operation, startedAt) {
+  if (!import.meta.env?.DEV) return;
+  console.info(`[camera] ${operation}: ${Math.round(performance.now() - startedAt)}ms`);
+}
 
   function stop() {
     generation += 1;
