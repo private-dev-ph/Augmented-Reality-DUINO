@@ -7,6 +7,7 @@ import { createCameraTracker, TRACKING_PROFILE_KEY } from './ar/camera-tracker.j
 import { computeHomography, createFourCornerCalibration, isValidCalibrationQuad, unprojectPoint } from './ar/four-corner-calibration.js';
 import { attachedArtworkProjectionBounds, createBoardOnlySnapshot, createProjectedOverlay } from './ar/projected-overlay.js';
 import { createTrackingDiagnosticLog, TRACKING_DEBUG_KEY } from './ar/tracking-diagnostics.js';
+import { sampleFiles } from 'virtual:sample-manifest';
 import {
   createCornerSmoother,
   displayPointToVideo,
@@ -196,6 +197,14 @@ view.devIsolateSequence.checked = isolateSequenceInAr;
 view.arDebugCanvas.hidden = !trackingDebugEnabled;
 cameraTracker.setDebugEnabled(trackingDebugEnabled);
 const camera = createCameraController(view.arCameraVideo, ({ state: cameraState, message }) => {
+  // Worker/WASM loading is independent of the camera stream. Start it while
+  // the browser is resolving the permission request so calibration can be
+  // ready sooner, without making the preview wait for it.
+  if (cameraState === 'requesting') {
+    cameraTracker.start();
+    if (message) setStatus(view, message);
+    return;
+  }
   const active = cameraState === 'active';
   resetArPresentationZoom();
   view.boardWrap.classList.toggle('camera-active', active);
@@ -222,7 +231,9 @@ const camera = createCameraController(view.arCameraVideo, ({ state: cameraState,
     view.devTrackingMetrics.textContent = 'Tracker inactive · diagnostics retained for download';
     cameraTracker.stop();
   } else {
-    view.arCalibrationButton.disabled = true;
+    // The tracker may have completed while camera permission/playback was in
+    // progress, so preserve its ready state instead of disabling calibration.
+    view.arCalibrationButton.disabled = !state.data || !cameraTracker.ready;
     cameraTracker.start();
   }
   if (message) setStatus(view, message);
@@ -236,10 +247,7 @@ let sequenceResumeIndex = 0;
 let renderQueued = false;
 let refreshingProjectedSource = false;
 
-const SAMPLE_SEQUENCE_FILES = [
-  { matches: /uno[^a-z0-9]*th[^a-z0-9]*rev3e/i, file: 'UNO-TH_Rev3e-sequence.json' },
-  { matches: /mega2560[^a-z0-9]*rev3e/i, file: 'MEGA2560-Rev3e-sequence.json' },
-];
+let loadedSampleId = '';
 
 function render() {
   if (renderQueued) return;
@@ -258,6 +266,37 @@ function shouldIsolateSequenceSelection() {
     && Boolean(state.selected || state.selectedNet);
 }
 
+// AR is intentionally rendered with the dark board palette in both app themes.
+// Keep this capture isolated: immediately restore the user's theme and redraw
+// the regular viewer once the projection source has been copied.
+function createDarkArSourceSnapshot({ isolateSequenceSelection = false } = {}) {
+  const root = document.documentElement;
+  const originalMode = root.getAttribute('data-mode');
+  const gridVisible = state.view.grid;
+  try {
+    state.view.grid = false;
+    root.dataset.mode = 'dark';
+    renderer.render({ isolateSequenceSelection });
+    return {
+      canvas: createBoardOnlySnapshot(
+        view.canvas,
+        getComputedStyle(root).getPropertyValue('--canvas-bg'),
+        {
+          viewport,
+          physicalBounds: physicalCalibrationBounds,
+          projectionBounds: projectedOverlayBounds,
+        },
+      ),
+      viewport: captureSourceViewport(),
+    };
+  } finally {
+    if (originalMode === null) root.removeAttribute('data-mode');
+    else root.setAttribute('data-mode', originalMode);
+    state.view.grid = gridVisible;
+    renderer.render();
+  }
+}
+
 // The camera transform changes on every tracking frame, but the projected
 // source only needs to be rebuilt when the PCB viewer state changes. Keeping
 // this work behind the normal render queue makes AR selection, search, layer,
@@ -266,24 +305,10 @@ function refreshProjectedSource() {
   if (refreshingProjectedSource || !camera.active || !state.data || !fourCornerCalibration.homography) return;
   if (!physicalCalibrationBounds || !projectedOverlayBounds) return;
   refreshingProjectedSource = true;
-  const gridVisible = state.view.grid;
-  let restoredGridAndRendered = false;
   try {
-    state.view.grid = false;
-    renderer.render({ isolateSequenceSelection: shouldIsolateSequenceSelection() });
-    const nextSourceCanvas = createBoardOnlySnapshot(
-      view.canvas,
-      getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg'),
-      {
-        viewport,
-        physicalBounds: physicalCalibrationBounds,
-        projectionBounds: projectedOverlayBounds,
-      },
-    );
-    const nextSourceViewport = captureSourceViewport();
-    state.view.grid = gridVisible;
-    renderer.render();
-    restoredGridAndRendered = true;
+    const { canvas: nextSourceCanvas, viewport: nextSourceViewport } = createDarkArSourceSnapshot({
+      isolateSequenceSelection: shouldIsolateSequenceSelection(),
+    });
     const overlayRendered = projectedOverlay.render({
       boardCanvas: nextSourceCanvas,
       viewport: nextSourceViewport,
@@ -300,10 +325,6 @@ function refreshProjectedSource() {
     // future viewer updates or leave the grid hidden.
     try { setStatus(view, 'AR overlay refresh skipped; keeping the last projection.'); } catch { /* status UI may be unavailable during teardown */ }
   } finally {
-    state.view.grid = gridVisible;
-    if (!restoredGridAndRendered) {
-      try { renderer.render(); } catch { /* retain the last projection if redraw also fails */ }
-    }
     refreshingProjectedSource = false;
   }
 }
@@ -332,25 +353,10 @@ function clearCalibrationPreview({ discardSource = true } = {}) {
 function buildCalibrationPreviewSource() {
   if (calibrationPreviewSourceCanvas && calibrationPreviewSourceViewport) return true;
   if (!state.data || !physicalCalibrationBounds || !projectedOverlayBounds) return false;
-  const gridVisible = state.view.grid;
-  try {
-    state.view.grid = false;
-    renderer.render();
-    calibrationPreviewSourceCanvas = createBoardOnlySnapshot(
-      view.canvas,
-      getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg'),
-      {
-        viewport,
-        physicalBounds: physicalCalibrationBounds,
-        projectionBounds: projectedOverlayBounds,
-      },
-    );
-    calibrationPreviewSourceViewport = captureSourceViewport();
-    return true;
-  } finally {
-    state.view.grid = gridVisible;
-    renderer.render();
-  }
+  const snapshot = createDarkArSourceSnapshot();
+  calibrationPreviewSourceCanvas = snapshot.canvas;
+  calibrationPreviewSourceViewport = snapshot.viewport;
+  return true;
 }
 
 function renderCalibrationPreview() {
@@ -984,25 +990,14 @@ function applyFourCornerCalibration() {
     setStatus(view, result.error);
     return;
   }
-  const gridVisible = state.view.grid;
-  state.view.grid = false;
   if (calibrationPreviewSourceCanvas && calibrationPreviewSourceViewport) {
     projectedSourceCanvas = calibrationPreviewSourceCanvas;
     projectedSourceViewport = calibrationPreviewSourceViewport;
   } else {
-    renderer.render();
-    projectedSourceCanvas = createBoardOnlySnapshot(
-      view.canvas,
-      getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg'),
-      {
-        viewport,
-        physicalBounds: physicalCalibrationBounds,
-        projectionBounds: projectedOverlayBounds,
-      },
-    );
-    projectedSourceViewport = captureSourceViewport();
+    const snapshot = createDarkArSourceSnapshot();
+    projectedSourceCanvas = snapshot.canvas;
+    projectedSourceViewport = snapshot.viewport;
   }
-  state.view.grid = gridVisible;
   renderer.render();
   const overlayRendered = projectedOverlay.render({
     boardCanvas: projectedSourceCanvas,
@@ -1120,7 +1115,7 @@ async function toggleCameraMode() {
   }
 }
 
-function loadBoard(rawBoard, name) {
+function loadBoard(rawBoard, name, { sampleId = '' } = {}) {
   resetArPresentationZoom();
   trackingTarget = null;
   sequenceResumeIndex = 0;
@@ -1136,6 +1131,7 @@ function loadBoard(rawBoard, name) {
   setOverlayTrackingState('idle');
   const board = normalizeBoard(rawBoard);
   setBoard(state, board);
+  loadedSampleId = sampleId;
   physicalCalibrationBounds = physicalBoardBounds(board);
   projectedOverlayBounds = attachedArtworkProjectionBounds(physicalCalibrationBounds);
   activeSequenceEntries = [];
@@ -1278,16 +1274,39 @@ function setBoardMenuOpen(open) {
   if (!open) closeControlWindow();
 }
 
-async function loadSampleBoard(path) {
-  const name = path.split('/').pop();
+function sampleAssetUrl(path) {
+  const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
+  // The build-time manifest URL-encodes every public-file path segment.
+  return `${baseUrl}${path}`;
+}
+
+function renderSampleOptions() {
+  view.sampleOptions.replaceChildren();
+  for (const sample of sampleFiles) {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.dataset.sampleId = sample.id;
+    option.textContent = sample.name;
+    view.sampleOptions.append(option);
+  }
+  if (!sampleFiles.length) {
+    const empty = document.createElement('p');
+    empty.className = 'control-copy';
+    empty.textContent = 'No sample reference files were found.';
+    view.sampleOptions.append(empty);
+  }
+}
+
+async function loadSampleBoard(sample) {
+  const name = sample.referencePath.split('/').at(-1);
   try {
     setStatus(view, `Reading ${name}...`);
-    const response = await fetch(path);
+    const response = await fetch(sampleAssetUrl(sample.referencePath));
     if (!response.ok) throw new Error(`Sample board could not be loaded (${response.status}).`);
     const blob = await response.blob();
     const file = new File([blob], name, { type: blob.type || 'application/zip' });
     const { board, name: boardName } = await loadBoardFile(file);
-    loadBoard(board, boardName);
+    loadBoard(board, sample.name || boardName, { sampleId: sample.id });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setStatus(view, `Load failed: ${message}`);
@@ -1760,11 +1779,9 @@ function installSequence(sequence, message) {
   setStatus(view, message);
 }
 
-function sampleSequenceUrl(boardName) {
-  const sample = SAMPLE_SEQUENCE_FILES.find(({ matches }) => matches.test(String(boardName || '')));
-  if (!sample) return '';
-  const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
-  return `${baseUrl}${sample.file}`;
+function sampleSequenceUrl() {
+  const sample = sampleFiles.find((candidate) => candidate.id === loadedSampleId);
+  return sample?.sequencePath ? sampleAssetUrl(sample.sequencePath) : '';
 }
 
 async function loadSampleSequence() {
@@ -1772,7 +1789,7 @@ async function loadSampleSequence() {
     view.sequenceEditorStatus.textContent = 'Load a board before loading its sequence.';
     return;
   }
-  const url = sampleSequenceUrl(state.data.name);
+  const url = sampleSequenceUrl();
   if (!url) {
     view.sequenceEditorStatus.textContent = 'No bundled sequence is available for this board. You can create one or upload a JSON file.';
     return;
@@ -2090,9 +2107,12 @@ for (const item of view.menuItems) {
 }
 view.controlWindowClose.addEventListener('click', closeControlWindow);
 view.controlBackdrop.addEventListener('click', closeControlWindow);
-for (const option of view.sampleOptions) {
-  option.addEventListener('click', () => loadSampleBoard(option.dataset.sample));
-}
+renderSampleOptions();
+view.sampleOptions.addEventListener('click', (event) => {
+  const option = event.target.closest('button[data-sample-id]');
+  const sample = sampleFiles.find((candidate) => candidate.id === option?.dataset.sampleId);
+  if (sample) loadSampleBoard(sample);
+});
 view.fileInput.addEventListener('change', (event) => {
   openBoardFile(event.target.files[0]);
   event.target.value = '';

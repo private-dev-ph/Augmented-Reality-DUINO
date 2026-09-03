@@ -92,7 +92,7 @@ export function createView() {
     controlWindowClose: byId('controlWindowClose'),
     controlPanels: [...document.querySelectorAll('.control-panel')],
     fileInput: byId('fileInput'),
-    sampleOptions: [...document.querySelectorAll('[data-sample]')],
+    sampleOptions: byId('sampleOptions'),
     themeToggle: byId('themeToggle'),
     themeToggleLabel: byId('themeToggleLabel'),
     layers: byId('layers'),

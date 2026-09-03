@@ -75,11 +75,14 @@ function eagleCirclePoints(x, y, radius) {
   return points;
 }
 
-function eagleJoinPath(segments) {
+export function eagleJoinPath(segments) {
   if (!segments.length) return [];
   const unused = segments.map((segment) => segment.slice());
   const path = [...unused.shift()];
-  const same = (first, second) => Math.hypot(first.x - second.x, first.y - second.y) < 0.001;
+  // EAGLE's rounded Edge.Cuts corners can serialize touching endpoints with a
+  // small coordinate rounding difference (for example, 0.016 mm in UNO-SMD).
+  // Keep this tight enough to avoid joining distinct board geometry.
+  const same = (first, second) => Math.hypot(first.x - second.x, first.y - second.y) <= 0.05;
   let current = path[path.length - 1];
 
   for (let guard = 0; guard < segments.length * 2; guard += 1) {

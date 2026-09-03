@@ -36,6 +36,12 @@ Vite prints a local address, normally `http://localhost:5173`. Open it in the sa
 
 The generic board-file upload logic exists in the codebase, but the current showcase interface intentionally disables it. Treat the bundled samples as the supported manual-demo path unless the product scope changes.
 
+### Add a bundled sample
+
+The sample menu is generated at Vite startup/build time from files under `public/`; no JavaScript menu or sequence mapping needs updating. Add a board reference as `<board-name>-reference.zip` and, when available, its inspection sequence as `<board-name>-sequence.json`. The shared `<board-name>` pairs the files case-insensitively, including in subfolders.
+
+Hyphens in `<board-name>` become spaces in the menu, and the app adds the `Arduino` prefix. For example, `MEGA-2560-Rev3e-reference.zip` appears as **Arduino MEGA 2560 Rev3e** and pairs with `MEGA-2560-Rev3e-sequence.json`. Restart `npm.cmd run dev` after adding files, or run `npm.cmd run build`; Cloudflare Pages discovers them during its normal build.
+
 ## 4. Understand the commands before changing code
 
 | Command | Purpose | When to run it |

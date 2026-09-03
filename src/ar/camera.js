@@ -7,6 +7,11 @@ export function createCameraController(video, onStateChange = () => {}) {
     onStateChange({ state, message, stream });
   }
 
+function logStartupTiming(operation, startedAt) {
+  if (!import.meta.env?.DEV) return;
+  console.info(`[camera] ${operation}: ${Math.round(performance.now() - startedAt)}ms`);
+}
+
   function stop() {
     generation += 1;
     startPromise = null;
@@ -18,21 +23,24 @@ export function createCameraController(video, onStateChange = () => {}) {
   }
 
   async function applySupportedCameraControls(track) {
-    const capabilities = track?.getCapabilities?.();
-    if (!capabilities) return;
-    const advanced = {};
-    if (Array.isArray(capabilities.focusMode) && capabilities.focusMode.includes('continuous')) {
-      advanced.focusMode = 'continuous';
-    }
-    if (Array.isArray(capabilities.exposureMode) && capabilities.exposureMode.includes('continuous')) {
-      advanced.exposureMode = 'continuous';
-    }
-    if (!Object.keys(advanced).length) return;
+    const controlsStartedAt = performance.now();
     try {
+      const capabilities = track?.getCapabilities?.();
+      if (!capabilities) return;
+      const advanced = {};
+      if (Array.isArray(capabilities.focusMode) && capabilities.focusMode.includes('continuous')) {
+        advanced.focusMode = 'continuous';
+      }
+      if (Array.isArray(capabilities.exposureMode) && capabilities.exposureMode.includes('continuous')) {
+        advanced.exposureMode = 'continuous';
+      }
+      if (!Object.keys(advanced).length) return;
       await track.applyConstraints({ advanced: [advanced] });
     } catch {
       // Capability reporting varies between mobile camera drivers. The stream
       // remains usable even when an advertised optional control is rejected.
+    } finally {
+      logStartupTiming('optional controls', controlsStartedAt);
     }
   }
 
@@ -51,6 +59,7 @@ export function createCameraController(video, onStateChange = () => {}) {
     notify('requesting', 'Requesting camera permission...');
     startPromise = (async () => {
       let requestedStream = null;
+      const startupStartedAt = performance.now();
       try {
         requestedStream = await navigator.mediaDevices.getUserMedia({
           audio: false,
@@ -61,13 +70,16 @@ export function createCameraController(video, onStateChange = () => {}) {
             frameRate: { ideal: 30, max: 30 },
           },
         });
+        logStartupTiming('getUserMedia', startupStartedAt);
         if (requestGeneration !== generation) {
           for (const track of requestedStream.getTracks()) track.stop();
           return null;
         }
         stream = requestedStream;
         video.srcObject = stream;
+        const playStartedAt = performance.now();
         await video.play();
+        logStartupTiming('video.play', playStartedAt);
         if (requestGeneration !== generation || stream !== requestedStream) {
           for (const track of requestedStream.getTracks()) track.stop();
           return null;
@@ -79,7 +91,6 @@ export function createCameraController(video, onStateChange = () => {}) {
           video.srcObject = null;
           notify('stopped', 'Camera stopped.');
         }, { once: true });
-        await applySupportedCameraControls(track);
         if (requestGeneration !== generation || stream !== requestedStream || track?.readyState === 'ended') {
           for (const requestedTrack of requestedStream.getTracks()) requestedTrack.stop();
           if (stream === requestedStream) stream = null;
@@ -87,6 +98,7 @@ export function createCameraController(video, onStateChange = () => {}) {
           return null;
         }
         notify('active');
+        void applySupportedCameraControls(track);
         return stream;
       } catch (error) {
         for (const track of requestedStream?.getTracks() || []) track.stop();

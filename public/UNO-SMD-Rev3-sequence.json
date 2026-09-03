@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "name": "Inspection sequence",
+  "boardName": "UNOSMD_V3",
+  "items": [
+    {
+      "type": "Component",
+      "name": "D1",
+      "layer": "F.Cu",
+      "pin": "A",
+      "pinNet": "PWRIN"
+    },
+    {
+      "type": "Component",
+      "name": "J1",
+      "layer": "F.Cu",
+      "pin": "8",
+      "pinNet": "VIN"
+    },
+    {
+      "type": "Component",
+      "name": "J1",
+      "layer": "F.Cu",
+      "pin": "2",
+      "pinNet": "+5V"
+    },
+    {
+      "type": "Component",
+      "name": "C3",
+      "layer": "F.Cu",
+      "pin": "2",
+      "pinNet": "+3V3"
+    },
+    {
+      "type": "Component",
+      "name": "TP_USBVCC",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "USBVCC"
+    },
+    {
+      "type": "Component",
+      "name": "TP_GATE",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "GATE_CMD"
+    },
+    {
+      "type": "Component",
+      "name": "TP_CMP",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "CMP"
+    },
+    {
+      "type": "Component",
+      "name": "TP_LCMD",
+      "layer": "F.Cu",
+      "pin": "X",
+      "pinNet": "L13"
+    }
+  ]
+}
