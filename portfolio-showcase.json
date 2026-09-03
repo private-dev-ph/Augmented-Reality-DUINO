@@ -1,0 +1,81 @@
+{
+  "title": "AR-DUINO",
+  "summary": "An active browser-based prototype that turns a physical PCB into an interactive, markerless AR inspection surface while keeping board data, camera frames, and computer-vision processing on the device.",
+  "status": "Active prototype",
+  "portfolioProjectId": "ar-board-schematic",
+  "logo": {
+    "src": "public/assets/AR-DUINO logo.png",
+    "alt": "AR-DUINO logo"
+  },
+  "internalDemoAvailable": false,
+  "sections": [
+    { "type": "problemPurpose" },
+    { "type": "keyFeatures" },
+    { "type": "techStack" },
+    { "type": "role" },
+    { "type": "technicalHighlights" },
+    { "type": "challenges" },
+    { "type": "results" },
+    { "type": "lessons" }
+  ],
+  "problem": "PCB inspection often forces attention to jump between a physical board, a board viewer, component references, and an inspection checklist. That context switching makes it harder to inspect a selected component or net directly on the hardware.",
+  "purpose": "AR-DUINO explores a static, browser-native workflow for recognizing a flat PCB with a phone camera and projecting the current board selection or inspection step back onto the physical board without sending camera frames to a server.",
+  "keyFeatures": [
+    "Interactive PCB viewer with bundled Arduino UNO and MEGA 2560 samples, pan and zoom, layer controls, selection, and connectivity highlighting.",
+    "In-browser parsing support for JSON, EAGLE XML/ZIP, and ODB++ ZIP board data; the current demo intentionally remains sample-first.",
+    "Four-corner calibration with an optional bounded edge-detection assist and a preview before applying the board reference.",
+    "Markerless planar tracking that recovers with AKAZE features and follows nearby motion with pyramidal Lucas–Kanade optical flow.",
+    "Inspection sequences that can guide a component or net step, with pass and flag actions and an AR option to isolate the active target.",
+    "On-device developer diagnostics for tracking points and live quality information."
+  ],
+  "techStack": [
+    "Vite",
+    "Vanilla JavaScript and ES modules",
+    "Canvas2D",
+    "WebGL with Canvas2D fallback",
+    "OpenCV 4.13 WebAssembly",
+    "Web Workers and OffscreenCanvas",
+    "AKAZE",
+    "Lucas–Kanade optical flow",
+    "RANSAC homography",
+    "Browser-native ZIP processing"
+  ],
+  "role": "I designed and implemented the browser-based PCB viewer and AR inspection prototype, including the board-data workflow, calibration experience, on-device tracking pipeline, projected overlay behavior, and inspection-sequence interactions.",
+  "technicalHighlights": [
+    "All vision work runs in a Web Worker using OpenCV WebAssembly; transferable ImageBitmaps and a one-frame-in-flight scheduler keep camera processing from backing up the main thread.",
+    "The tracker combines global AKAZE descriptor recovery with fast local pyramidal Lucas–Kanade tracking, then estimates a planar pose through RANSAC homography.",
+    "Quality gates validate inliers, feature coverage, reprojection error, quadrilateral geometry, bounds, and temporal continuity before accepting a pose.",
+    "Tracking state moves through TRACKED, SUSPECT, RECOVERING, and LOST modes so an untrustworthy or stale overlay is faded or hidden rather than presented as current.",
+    "A shared board model and selection state drive both the flat viewer and AR projection, avoiding a separate AR-only representation of components, nets, and inspection steps.",
+    "The projective overlay uses WebGL when available and retains a Canvas2D fallback for broader browser compatibility."
+  ],
+  "challengesAndSolutions": [
+    {
+      "challenge": "Markerless tracking must recover from larger movements while also responding smoothly to smaller frame-to-frame motion.",
+      "solution": "The implementation uses AKAZE feature matching for global recovery and pyramidal Lucas–Kanade optical flow for nearby motion, with RANSAC homography joining both paths."
+    },
+    {
+      "challenge": "A plausible-looking overlay can be unsafe if it is based on weak matches, drift, or an old pose.",
+      "solution": "Independent geometric, visual, and temporal quality gates feed explicit tracking states that fade or hide the projection when confidence drops."
+    },
+    {
+      "challenge": "A browser AR workflow needs to remain responsive on mobile hardware without a backend processing camera video.",
+      "solution": "The app keeps processing on-device in a worker, bounds image sizes by performance profile, transfers frames efficiently, and permits only one frame in flight."
+    },
+    {
+      "challenge": "Inspection guidance can become disconnected from the normal board viewer if it introduces a second state model.",
+      "solution": "The AR overlay, viewer, and inspection sequence use the same board model and current selection, so actions in one surface are reflected in the others."
+    }
+  ],
+  "resultsImpact": [
+    "Demonstrates an on-device, static-web approach to AR-assisted PCB inspection with no camera-frame upload or vision backend.",
+    "Provides a guided workflow that can project the selected component, net, or active inspection-sequence step directly onto a matching physical sample board.",
+    "Establishes an inspectable prototype baseline for validating browser-based planar tracking across intended boards, lighting conditions, cameras, and device classes."
+  ],
+  "lessonsLearned": [
+    "A planar homography is useful for a mostly flat PCB but does not overcome parallax, glare, blur, severe occlusion, lens distortion, or near-edge-on views.",
+    "Tracking confidence and failure behavior are part of the interaction design: hiding a stale overlay is more trustworthy than preserving a reassuring but incorrect projection.",
+    "Synthetic probes and bundled samples are valuable regression tools, but real-device validation with the target board and operating environment remains essential.",
+    "A static browser deployment can keep the complete viewing, parsing, camera, tracking, and overlay workflow local while still requiring HTTPS and feature-aware fallbacks."
+  ]
+}
