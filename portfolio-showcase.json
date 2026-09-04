@@ -7,7 +7,7 @@
     "src": "public/assets/AR-DUINO logo.png",
     "alt": "AR-DUINO logo"
   },
-  "internalDemoAvailable": false,
+  "internalDemoAvailable": true,
   "sections": [
     { "type": "problemPurpose" },
     { "type": "keyFeatures" },
